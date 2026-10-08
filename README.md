@@ -13,7 +13,7 @@
 
 - The ESP32 must feed the panel's **DIN** end. If the green wire is on a pad marked DOUT, use the 3 wires at the other end of the panel.
 - The common ground is required: without it the data signal has no reference and the panel shows garbage or nothing.
-- A full-white panel draws up to ~15 A. Use a 5 V supply rated 4 A or more, set **Setup → Power limit** a little under its rating (default 2000 mA), and put a 1000 µF capacitor across the supply's + and −.
+- A full-white panel draws up to ~15 A. Use a 5 V supply rated 4 A or more, set **Setup → Power limit** a little under its rating (default 500 mA, which is safe on USB power), and put a 1000 µF capacitor across the supply's + and −.
 - To run without USB, also wire supply 5 V → ESP32 `VIN`. Plugging USB in as well, with the grounds shared, is fine for flashing.
 - 3.3 V data usually drives these panels. If the panel flickers or shows random colours, add a 74AHCT125 level shifter.
 

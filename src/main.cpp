@@ -69,7 +69,7 @@ struct Settings {
   bool columns = false;           // wiring runs down columns instead of along rows
   bool flipX = false;
   bool flipY = false;
-  uint16_t maxMilliamps = 2000;
+  uint16_t maxMilliamps = 500;     // safe on USB power; raise in Setup with a real supply
   String staSsid;
   String staPass;
 } S;
