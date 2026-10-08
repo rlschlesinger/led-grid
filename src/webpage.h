@@ -1,0 +1,275 @@
+// The control page, served from flash at "/". Plain HTML/CSS/JS, no external
+// files, so it works on the board's own network with no internet.
+#pragma once
+#include <Arduino.h>
+
+static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111214">
+<title>LED Grid</title>
+<style>
+:root{--bg:#111214;--panel:#1b1d21;--line:#2c2f35;--text:#ececef;--dim:#9a9ca3;--accent:#ff8a3d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.4 -apple-system,system-ui,sans-serif;-webkit-tap-highlight-color:transparent}
+main{max-width:560px;margin:0 auto;padding:16px 16px 48px}
+header{display:flex;align-items:center;gap:14px;margin-bottom:16px}
+h1{font-size:22px;margin:0;flex:1}
+#status{font-size:12px;color:var(--dim);text-align:right}
+#preview{width:96px;height:96px;image-rendering:pixelated;border-radius:6px;background:#000;border:1px solid var(--line)}
+section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+h2{font-size:15px;margin:0 0 10px}
+.modes{display:grid;grid-template-columns:repeat(auto-fill,minmax(98px,1fr));gap:8px}
+button{font:inherit;color:var(--text);background:#262930;border:1px solid var(--line);border-radius:9px;padding:10px 8px;cursor:pointer}
+button.on{background:var(--accent);border-color:var(--accent);color:#1a0d02;font-weight:600}
+button:active{transform:scale(.97)}
+label.row{display:flex;align-items:center;gap:12px;margin:10px 0}
+label.row span{width:88px;color:var(--dim);flex:none}
+input[type=range]{flex:1;accent-color:var(--accent);height:28px}
+input[type=color]{width:56px;height:34px;border:none;background:none;padding:0}
+input[type=text],input[type=password],input[type=number],select{flex:1;min-width:0;font:inherit;color:var(--text);background:#111214;border:1px solid var(--line);border-radius:8px;padding:8px}
+output{width:34px;text-align:right;color:var(--dim);font-variant-numeric:tabular-nums}
+#paint{width:100%;aspect-ratio:1;touch-action:none;image-rendering:pixelated;background:#000;border-radius:8px;display:block}
+.tools{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center}
+.hint{color:var(--dim);font-size:13px;margin:6px 0 0}
+details summary{cursor:pointer;font-weight:600}
+.checks{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}
+.checks label{display:flex;gap:8px;align-items:center}
+.hidden{display:none}
+</style></head><body><main>
+<header>
+  <h1>LED Grid</h1>
+  <div id="status">connecting…</div>
+  <canvas id="preview" width="16" height="16" title="Live preview"></canvas>
+</header>
+
+<section><h2>Effect</h2><div class="modes" id="modes"></div></section>
+
+<section>
+  <label class="row"><span>Brightness</span><input type="range" id="brightness" min="1" max="255"><output id="brightnessV"></output></label>
+  <label class="row"><span>Speed</span><input type="range" id="speed" min="1" max="100"><output id="speedV"></output></label>
+  <label class="row"><span>Colour</span><input type="color" id="color"></label>
+  <label class="row"><span>Palette</span><select id="palette"></select></label>
+  <div id="textOpts" class="hidden">
+    <label class="row"><span>Text</span><input type="text" id="text" maxlength="120" autocomplete="off"></label>
+    <label class="row"><span>Size</span><select id="textSize"><option value="1">Small (7 px)</option><option value="2">Large (14 px)</option></select></label>
+  </div>
+</section>
+
+<section id="drawPanel" class="hidden">
+  <h2>Draw</h2>
+  <canvas id="paint" width="16" height="16"></canvas>
+  <div class="tools">
+    <input type="color" id="brush" value="#ff8a3d">
+    <button id="toolPaint" class="on">Paint</button>
+    <button id="toolErase">Erase</button>
+    <button id="fillAll">Fill</button>
+    <button id="clearAll">Clear</button>
+    <button id="imgBtn">Image…</button>
+    <input type="file" id="img" accept="image/*" class="hidden">
+  </div>
+  <p class="hint">Drag to paint. Images are cropped square and shrunk to 16×16.</p>
+</section>
+
+<section>
+<details id="setup"><summary>Setup</summary>
+  <h2 style="margin-top:14px">Panel layout</h2>
+  <p class="hint">Pick <b>Layout test</b>. White should sit top-left, red top-right, green bottom-left, and the yellow dot should run left→right along the top row, then each row below. Flip these until it does.</p>
+  <div class="checks">
+    <label><input type="checkbox" id="serpentine"> Zigzag wiring</label>
+    <label><input type="checkbox" id="columns"> Wired in columns</label>
+    <label><input type="checkbox" id="flipX"> Flip left/right</label>
+    <label><input type="checkbox" id="flipY"> Flip up/down</label>
+  </div>
+  <label class="row"><span>Power limit</span><input type="number" id="maxMilliamps" min="200" max="20000" step="100"><span style="width:auto">mA</span></label>
+  <p class="hint">Dims everything to stay under this current. Set it to your 5 V supply's rating, minus a little.</p>
+
+  <h2 style="margin-top:18px">Home Wi-Fi</h2>
+  <p class="hint" id="wifiInfo"></p>
+  <form id="wifiForm">
+    <label class="row"><span>Network</span><input type="text" id="ssid" autocomplete="off" autocapitalize="off"></label>
+    <label class="row"><span>Password</span><input type="password" id="pass"></label>
+    <div class="tools"><button type="submit">Save &amp; restart</button><button type="button" id="forget">Forget</button></div>
+  </form>
+</details>
+</section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const N = 16;
+let state = null;
+
+// One request in flight per endpoint; newer payloads replace queued ones.
+function sender(url) {
+  let busy = false, queued = null;
+  const run = async body => {
+    busy = true;
+    try {
+      const r = await fetch(url, {method: 'POST', body});
+      if (r.headers.get('content-type')?.includes('json')) apply(await r.json(), true);
+      online(true);
+    } catch (e) { online(false); }
+    busy = false;
+    if (queued !== null) { const q = queued; queued = null; run(q); }
+  };
+  return body => busy ? (queued = body) : run(body);
+}
+const sendSet = sender('/api/set');
+const sendCanvas = sender('/api/canvas');
+let pendingSet = {};
+function set(obj) { Object.assign(pendingSet, obj); sendSet(new URLSearchParams(pendingSet)); pendingSet = {}; }
+
+function online(ok) {
+  if (!ok) { $('status').textContent = 'offline'; return; }
+  const w = state?.wifi;
+  $('status').textContent = w?.connected ? w.ip : (w?.apIp || '');
+}
+
+function apply(s, fromServer) {
+  const first = !state;
+  state = s;
+  if (first) {
+    s.modes.forEach((name, i) => {
+      const b = document.createElement('button');
+      b.textContent = name;
+      b.onclick = () => set({mode: i});
+      $('modes').appendChild(b);
+    });
+    s.palettes.forEach((name, i) => $('palette').add(new Option(name, i)));
+  }
+  [...$('modes').children].forEach((b, i) => b.classList.toggle('on', i === s.mode));
+  // Don't fight the user: leave a control alone while it has focus.
+  const put = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
+  put('brightness', s.brightness); $('brightnessV').textContent = s.brightness;
+  put('speed', s.speed); $('speedV').textContent = s.speed;
+  put('color', s.color.toLowerCase());
+  put('palette', s.palette);
+  put('text', s.text);
+  put('textSize', s.textSize);
+  put('maxMilliamps', s.maxMilliamps);
+  for (const k of ['serpentine', 'columns', 'flipX', 'flipY']) $(k).checked = s[k];
+  const name = s.modes[s.mode];
+  $('textOpts').classList.toggle('hidden', name !== 'Text');
+  const drawing = name === 'Draw';
+  if (drawing && $('drawPanel').classList.contains('hidden')) loadCanvas();
+  $('drawPanel').classList.toggle('hidden', !drawing);
+  const w = s.wifi;
+  $('wifiInfo').textContent = w.connected
+    ? `Joined “${w.ssid}” at ${w.ip}. Also reachable on the “${w.ap}” network at ${w.apIp}.`
+    : w.ssid ? `Saved “${w.ssid}” but not connected. Its own network “${w.ap}” is at ${w.apIp}.`
+             : `Not joined to any network. Its own network “${w.ap}” is at ${w.apIp}.`;
+  if (document.activeElement !== $('ssid')) $('ssid').value = w.ssid;
+  online(true);
+}
+
+// Sliders: send while dragging, throttled.
+for (const id of ['brightness', 'speed']) {
+  let t = 0;
+  $(id).addEventListener('input', e => {
+    $(id + 'V').textContent = e.target.value;
+    const now = Date.now();
+    if (now - t > 60) { t = now; set({[id]: e.target.value}); }
+  });
+  $(id).addEventListener('change', e => set({[id]: e.target.value}));
+}
+$('color').addEventListener('input', e => set({color: e.target.value}));
+$('palette').addEventListener('change', e => set({palette: e.target.value}));
+$('textSize').addEventListener('change', e => set({textSize: e.target.value}));
+$('text').addEventListener('input', e => set({text: e.target.value}));
+$('maxMilliamps').addEventListener('change', e => set({maxMilliamps: e.target.value}));
+for (const k of ['serpentine', 'columns', 'flipX', 'flipY'])
+  $(k).addEventListener('change', e => set({[k]: e.target.checked ? 1 : 0}));
+
+// Live preview of what the panel shows.
+const pctx = $('preview').getContext('2d');
+function drawHex(ctx, hex) {
+  const img = ctx.createImageData(N, N);
+  for (let i = 0; i < N * N; i++) {
+    img.data[i * 4] = parseInt(hex.substr(i * 6, 2), 16);
+    img.data[i * 4 + 1] = parseInt(hex.substr(i * 6 + 2, 2), 16);
+    img.data[i * 4 + 2] = parseInt(hex.substr(i * 6 + 4, 2), 16);
+    img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+async function pollPreview() {
+  if (document.visibilityState === 'visible') {
+    try {
+      const hex = await (await fetch('/api/frame')).text();
+      if (hex.length === N * N * 6) drawHex(pctx, hex);
+      online(true);
+    } catch (e) { online(false); }
+  }
+  setTimeout(pollPreview, 200);
+}
+
+// Drawing.
+const paint = $('paint'), ctx = paint.getContext('2d');
+let pixels = new Array(N * N).fill('000000');
+let erase = false, canvasTimer = 0;
+function render() { drawHex(ctx, pixels.join('')); }
+function pushCanvas() {
+  render();
+  clearTimeout(canvasTimer);
+  canvasTimer = setTimeout(() => sendCanvas(pixels.join('')), 40);
+}
+async function loadCanvas() {
+  try {
+    const hex = await (await fetch('/api/canvas')).text();
+    if (hex.length === N * N * 6) { pixels = hex.match(/.{6}/g); render(); }
+  } catch (e) {}
+}
+function cell(e) {
+  const r = paint.getBoundingClientRect();
+  const x = Math.floor((e.clientX - r.left) / r.width * N), y = Math.floor((e.clientY - r.top) / r.height * N);
+  return x >= 0 && x < N && y >= 0 && y < N ? y * N + x : -1;
+}
+function dab(e) {
+  const i = cell(e);
+  if (i < 0) return;
+  const c = erase ? '000000' : $('brush').value.slice(1);
+  if (pixels[i] !== c) { pixels[i] = c; pushCanvas(); }
+}
+paint.addEventListener('pointerdown', e => { paint.setPointerCapture(e.pointerId); dab(e); });
+paint.addEventListener('pointermove', e => { if (e.buttons) dab(e); });
+$('toolPaint').onclick = () => { erase = false; $('toolPaint').classList.add('on'); $('toolErase').classList.remove('on'); };
+$('toolErase').onclick = () => { erase = true; $('toolErase').classList.add('on'); $('toolPaint').classList.remove('on'); };
+$('fillAll').onclick = () => { pixels.fill($('brush').value.slice(1)); pushCanvas(); };
+$('clearAll').onclick = () => { pixels.fill('000000'); pushCanvas(); };
+$('imgBtn').onclick = () => $('img').click();
+$('img').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const im = new Image();
+  im.onload = () => {
+    const c = document.createElement('canvas'); c.width = c.height = N;
+    const x = c.getContext('2d');
+    x.imageSmoothingQuality = 'high';
+    const s = Math.min(im.width, im.height);
+    x.drawImage(im, (im.width - s) / 2, (im.height - s) / 2, s, s, 0, 0, N, N);
+    const d = x.getImageData(0, 0, N, N).data;
+    for (let i = 0; i < N * N; i++)
+      pixels[i] = [d[i * 4], d[i * 4 + 1], d[i * 4 + 2]].map(v => v.toString(16).padStart(2, '0')).join('');
+    pushCanvas();
+    URL.revokeObjectURL(im.src);
+  };
+  im.src = URL.createObjectURL(f);
+  e.target.value = '';
+});
+
+// Wi-Fi.
+async function saveWifi(ssid, pass) {
+  const r = await fetch('/api/wifi', {method: 'POST', body: new URLSearchParams({ssid, pass})});
+  alert(await r.text() + (ssid ? ' Its new address scrolls across the grid once it joins.' : ''));
+}
+$('wifiForm').addEventListener('submit', e => { e.preventDefault(); saveWifi($('ssid').value, $('pass').value); });
+$('forget').onclick = () => saveWifi('', '');
+
+(async function start() {
+  try { apply(await (await fetch('/api/state')).json()); }
+  catch (e) { online(false); setTimeout(start, 1500); return; }
+  pollPreview();
+})();
+</script></body></html>
+)HTML";
