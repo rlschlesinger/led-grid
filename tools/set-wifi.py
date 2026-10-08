@@ -11,9 +11,12 @@ import getpass, glob, os, shutil, subprocess, sys, time
 try:
     import serial
 except ImportError:
+    # PlatformIO's Python has pyserial. Its venv interpreter resolves to the
+    # same binary as plain python3, so guard re-running with an env var.
     pio = shutil.which("pio")
     py = open(pio).readline()[2:].strip() if pio else None
-    if py and os.path.realpath(py) != os.path.realpath(sys.executable):
+    if py and not os.environ.get("SET_WIFI_REEXEC"):
+        os.environ["SET_WIFI_REEXEC"] = "1"
         sys.exit(subprocess.call([py, *sys.argv]))
     sys.exit("pyserial missing: pip3 install pyserial")
 
