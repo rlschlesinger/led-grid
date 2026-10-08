@@ -514,6 +514,34 @@ static void pollWifi() {
   }
 }
 
+// ---- Serial setup -------------------------------------------------------------
+// tools/set-wifi.py sends "WIFI<tab>ssid<tab>password" so home Wi-Fi can be set
+// over USB without joining the board's own network.
+static void pollSerial() {
+  static String line;
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\r') continue;
+    if (c != '\n') { if (line.length() < 200) line += c; continue; }
+    if (line.startsWith("WIFI\t")) {
+      int tab = line.indexOf('\t', 5);
+      if (tab > 5) {
+        S.staSsid = line.substring(5, tab);
+        S.staPass = line.substring(tab + 1);
+        prefs.begin("grid", false);
+        prefs.putString("ssid", S.staSsid);
+        prefs.putString("pass", S.staPass);
+        prefs.end();
+        Serial.printf("Saved Wi-Fi \"%s\". Restarting.\n", S.staSsid.c_str());
+        Serial.flush();
+        delay(200);
+        ESP.restart();
+      }
+    }
+    line = "";
+  }
+}
+
 // ---- Main -------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
@@ -533,6 +561,7 @@ void setup() {
 void loop() {
   server.handleClient();
   pollWifi();
+  pollSerial();
 
   static uint32_t lastFrame = 0;
   uint32_t now = millis();

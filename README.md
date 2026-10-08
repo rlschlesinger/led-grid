@@ -25,7 +25,7 @@
 
 1. Join Wi-Fi **LED-Grid** (password `ledgrid123`) and open http://192.168.4.1.
 2. Pick **Layout test** and toggle **Setup → Panel layout** until white is top-left and the yellow dot runs left→right along the top row.
-3. Optional: **Setup → Home Wi-Fi**. The board restarts, joins your network and scrolls its IP across the grid; http://ledgrid.local usually works too. The LED-Grid network stays up as a fallback, and if your Wi-Fi can't be joined within 20 s it gives up until the next restart.
+3. Optional: home Wi-Fi, either from **Setup → Home Wi-Fi** on the page, or over USB with `python3 tools/set-wifi.py "Network name"` (hidden password prompt). The board restarts, joins your network and scrolls its IP across the grid; http://ledgrid.local usually works too. The LED-Grid network stays up as a fallback, and if your Wi-Fi can't be joined within 20 s it gives up until the next restart.
 
 Effects: Solid, Rainbow, Plasma, Fire, Matrix, Twinkle, Life, Ripple, Lava lamp, Radar, scrolling Text, Draw (paint pixels or upload an image), Layout test. Settings and drawings survive reboots.
 
