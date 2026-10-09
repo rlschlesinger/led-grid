@@ -535,6 +535,8 @@ static String stateJson() {
   j += ",\"sharks\":" + String(S.sharks ? "true" : "false");
   j += ",\"gamePong\":" + String(S.gamePong ? "true" : "false");
   j += ",\"game\":" + currentStatus();
+  j += ",\"uptime\":" + String(millis() / 1000);
+  j += ",\"reset\":" + String((int)esp_reset_reason());
   j += ",\"modes\":[";
   for (int i = 0; i < M_COUNT; i++) j += String(i ? "," : "") + "\"" + MODE_NAMES[i] + "\"";
   j += "],\"palettes\":[";

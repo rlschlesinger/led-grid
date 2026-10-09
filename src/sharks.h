@@ -69,7 +69,8 @@ static void pushEvent(ShowKind kind, int us, int them, const char *opp) {
 static bool isLive(const char *state) { return !strcmp(state, "LIVE") || !strcmp(state, "CRIT"); }
 static bool isOver(const char *state) { return !strcmp(state, "FINAL") || !strcmp(state, "OFF"); }
 
-// Follows one live game until it ends. Returns when it's over or Wi-Fi drops.
+// Follows one live game until it ends (or alerts are switched off). A Wi-Fi
+// blip just waits, so Shark pong doesn't drop out mid-game.
 static void followGame(uint32_t id, int us, int them, bool home, const String &opp) {
   JsonDocument filter;
   filter["gameState"] = true;
@@ -82,9 +83,9 @@ static void followGame(uint32_t id, int us, int them, bool home, const String &o
   String url = "https://api-web.nhle.com/v1/gamecenter/" + String(id) + "/landing";
   Preferences p;
 
-  while (S.sharks && WiFi.status() == WL_CONNECTED) {
+  while (S.sharks) {
     JsonDocument doc;
-    if (fetchJson(url, doc, filter)) {
+    if (WiFi.status() == WL_CONNECTED && fetchJson(url, doc, filter)) {
       const char *state = doc["gameState"] | "";
       int nowUs = doc[home ? "homeTeam" : "awayTeam"]["score"] | us;
       int nowThem = doc[home ? "awayTeam" : "homeTeam"]["score"] | them;
@@ -194,8 +195,7 @@ static void fxPong() {
   static float bx = 7.5f, by = 7.5f, vx = 0.22f, vy = 0.13f, left = 7.5f, right = 7.5f;
   static float aimL = 0, aimR = 0;          // each paddle's miss-prone offset, rerolled per rally
   static uint8_t ptsL = 0, ptsR = 0;
-  static uint32_t pauseUntil = 0, chompUntil = 0, flashUntil = 0;
-  static CRGB flashColor;
+  static uint32_t pauseUntil = 0, chompUntil = 0;
   uint32_t now = millis();
   float k = S.speed / 50.0f;
 
@@ -204,7 +204,7 @@ static void fxPong() {
     vx = dir * 0.22f; vy = (random8(2) ? 1 : -1) * (0.06f + random8(10) / 100.0f);
     aimL = (random8(100) - 50) / 30.0f;     // up to ~1.7 px off: Sharks usually reach it
     aimR = (random8(100) - 50) / 22.0f;     // up to ~2.3 px off: they miss more
-    pauseUntil = now + 600;
+    pauseUntil = now + 400;
   };
 
   if (now >= pauseUntil) {
@@ -224,11 +224,11 @@ static void fxPong() {
     }
     vx = constrain(vx, -0.45f, 0.45f);
     vy = constrain(vy, -0.3f, 0.3f);
-    if (bx < -1) { ptsR++; flashColor = CRGB(60, 0, 0); flashUntil = now + 300; serve(1); }
-    if (bx > W) { ptsL++; flashColor = TEAL; flashUntil = now + 300; serve(-1); }
+    if (bx < -1) { ptsR++; serve(1); }
+    if (bx > W) { ptsL++; serve(-1); }
   }
 
-  fill_solid(frame, NUM_LEDS, now < flashUntil ? flashColor.scale8(80) : CRGB(0, 0, 4));
+  fill_solid(frame, NUM_LEDS, CRGB(0, 0, 4));
   for (int y = 0; y < H; y += 2) { px(7, y) = CRGB(0, 25, 30); px(8, y) = CRGB(0, 25, 30); }
   bool live = gameLive;
   CRGB dim(40, 40, 50);
