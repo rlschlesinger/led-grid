@@ -5,8 +5,8 @@
 // on a queue. The render loop on core 1 plays each as a full-screen show over
 // whatever effect is running:
 //   Sharks goal   teal/white strobe, rings, a fin swimming, "GOAL!", the score
-//   goal against  red flash, a crying face in the rain, "UGH", the score
-//   final         the goal show with "SHARKS WIN!", or the sad one with "FINAL"
+//   goal against  the shark is hooked and hauled out of the water, "UGH.", the score
+//   final         the goal show with "SHARKS WIN!", or the shark beached at sunset, "FINAL"
 #pragma once
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -247,25 +247,6 @@ static void fxPong() {
 static GameEvent show{SHOW_NONE, 0, 0, {0}};
 static uint32_t showStart = 0;
 
-static const char *SAD_FACE[H] = {
-  ".....######.....",
-  "...##......##...",
-  "..#..........#..",
-  ".#............#.",
-  ".#............#.",
-  "#...##....##...#",
-  "#...##....##...#",
-  "#..............#",
-  "#..............#",
-  "#.....####.....#",
-  "#....#....#....#",
-  ".#..#......#..#.",
-  ".#............#.",
-  "..#..........#..",
-  "...##......##...",
-  ".....######.....",
-};
-
 static String scoreLine(const GameEvent &e) {
   return String(TEAM) + " " + e.us + "  " + e.opp + " " + e.them;
 }
@@ -325,33 +306,142 @@ static bool goalShow(CRGB *buf, uint32_t t, const String &words) {
   return scrollOnce(buf, scoreLine(show), t, scoreT0, 1, 55, CRGB::White);
 }
 
-// The sad one: a red flash, then a crying face in the rain, then words.
-static bool sadShow(CRGB *buf, uint32_t t, const String &words) {
-  fill_solid(buf, NUM_LEDS, CRGB::Black);
-  if (t < 700) {
-    fill_solid(buf, NUM_LEDS, CRGB(160, 0, 0));
-    nscale8(buf, NUM_LEDS, 255 - t * 255 / 700);
+// ---- Sad shows: the shark gets hooked, or washes up -------------------------
+// 14x7, facing right. '#' body, 'w' belly, 'o' eye.
+static const char *SHARK[7] = {
+  "........#.....",
+  ".......###....",
+  "#....#######..",
+  "##.#######o##.",
+  "##############",
+  "##.#wwwwwwww#.",
+  "#.....wwwww...",
+};
+constexpr int SHARK_W = 14, SHARK_H = 7;
+
+// belly-up flips it vertically; deadEye turns the eye red.
+static void drawShark(CRGB *buf, int x0, int y0, bool bellyUp, bool deadEye, uint8_t level = 255) {
+  for (int r = 0; r < SHARK_H; r++)
+    for (int c = 0; c < SHARK_W; c++) {
+      char ch = SHARK[bellyUp ? SHARK_H - 1 - r : r][c];
+      int x = x0 + c, y = y0 + r;
+      if (ch == '.' || x < 0 || x >= W || y < 0 || y >= H) continue;
+      CRGB col = ch == '#' ? CRGB(95, 110, 135) : ch == 'w' ? CRGB(200, 200, 210) : deadEye ? CRGB(150, 0, 0) : CRGB(0, 0, 0);
+      col.nscale8(level);
+      buf[y * W + x] = col;
+    }
+}
+
+// Underwater, with the surface and a strip of sky in the top three rows so
+// being hauled "out of the water" reads at 16 px.
+constexpr int SURFACE = 2;
+static void water(CRGB *buf, uint32_t t) {
+  for (int y = 0; y < H; y++)
+    for (int x = 0; x < W; x++)
+      buf[y * W + x] = y < SURFACE ? CRGB(10, 10, 25)
+                     : y == SURFACE ? ((x + t / 120) % 4 ? CRGB(30, 90, 140) : CRGB(120, 170, 210))
+                     : CRGB(0, 14 + y * 2, 40 + y * 4);
+  for (int i = 0; i < 4; i++) {                       // bubbles drifting up
+    int bx = (i * 5 + 3) % W, by = H - 1 - (int)((t / 90 + i * 11) % (H - SURFACE));
+    if (by > SURFACE && by < H) buf[by * W + bx] = CRGB(50, 100, 150);
+  }
+}
+
+// Goal against: swims in, a hook drops, it bites, and gets hauled out thrashing.
+static bool hookedShow(CRGB *buf, uint32_t t, const String &words) {
+  const CRGB LINE(150, 150, 160), HOOK(230, 230, 240);
+  const int restX = 1, restY = 8, mouthX = restX + 13, mouthY = restY + 5;
+  if (t < 400) {                                      // a red warning flash
+    fill_solid(buf, NUM_LEDS, CRGB(150, 0, 0));
+    nscale8(buf, NUM_LEDS, 255 - t * 255 / 400);
     return true;
   }
-  if (t < 5200) {
-    uint32_t s = t - 700;
-    for (int x = 0; x < W; x++) {                     // rain: one drop per column
-      int y = ((s / 70) + x * 7 + (x * x) % 5) % (H + 6);
-      if (y < H) buf[y * W + x] = CRGB(0, 10, 45);
+  if (t < 7600) {
+    uint32_t s = t - 400;
+    water(buf, s);
+    int sx = restX, sy = restY;
+    bool flail = false;
+    if (s < 1600) {                                   // swims in from the left, bobbing
+      sx = -SHARK_W + (int)s * (restX + SHARK_W) / 1600;
+      sy = restY + (sin8(s / 3) > 128 ? 0 : 1);
+    } else if (s >= 3000 && s < 3600) {               // hooked: thrashes in place
+      sx = restX + ((s / 60) % 2 ? 1 : -1);
+      flail = (s / 120) % 2;
+    } else if (s >= 3600) {                           // hauled up through the surface
+      uint32_t u = s - 3600;
+      sy = restY - (int)(u * (restY + SHARK_H) / 2400);
+      sx = restX + ((u / 80) % 2 ? 1 : -1);
+      flail = (u / 140) % 2;
     }
-    uint8_t fade = s < 3500 ? 255 : 255 - (s - 3500) * 255 / 1000;
+    // Line and hook: drop by 2.4 s, the bite at 3.0 s, then the hook rides in its mouth.
+    int hookBottom = s < 800 ? -1 : s < 2400 ? (int)(s - 800) * mouthY / 1600 : sy + 5;
+    int hx = s >= 3000 ? sx + 13 : mouthX;
+    for (int y = 0; y < hookBottom - 3 && y < H; y++) if (hx >= 0 && hx < W) buf[y * W + hx] = LINE;
+    const char *hook[4] = {"..#", "..#", "#.#", ".##"};
+    drawShark(buf, sx, sy, flail, false);
+    for (int r = 0; r < 4; r++)                       // hook drawn over the shark so it's visible
+      for (int c = 0; c < 3; c++) {
+        int x = hx - 2 + c, y = hookBottom - 3 + r;
+        if (hook[r][c] == '#' && x >= 0 && x < W && y >= 0 && y < H) buf[y * W + x] = HOOK;
+      }
+    if (s >= 2400 && s < 3000 && (s / 150) % 2) {     // the bite: mouth snaps at the hook
+      int bx = min(W - 1, sx + 13), by = sy + 5;
+      buf[by * W + bx] = CRGB::White;
+    }
+    if (s >= 3600 && sy < SURFACE + 3 && sy + SHARK_H > 0) {   // splash as it breaks the surface
+      for (int i = 0; i < 10; i++) {
+        int x = (i * 3 + (s / 45) % 3) % W, y = (i * 7 + s / 35) % (SURFACE + 2);
+        buf[y * W + x] = CRGB(170, 210, 240);
+      }
+    }
+    if (s > 6200) nscale8(buf, NUM_LEDS, 255 - (s - 6200) * 200 / 1400);
+    return true;
+  }
+  fill_solid(buf, NUM_LEDS, CRGB::Black);
+  uint32_t textT0 = 7600;
+  uint32_t scoreT0 = textT0 + (textWidth(words, 2) + W) * 55;
+  if (t < scoreT0) return scrollOnce(buf, words, t, textT0, 2, 55, CRGB(40, 60, 170));
+  return scrollOnce(buf, scoreLine(show), t, scoreT0, 1, 65, CRGB(70, 70, 110));
+}
+
+// Loss: the tide goes out and strands the shark on the beach at sunset. It
+// flops, then lies belly-up with a red eye as the sun sets into the sea.
+// Rows: sky 0-6, sea 7-9, sand 10-15, so the sun never sits behind the shark.
+static bool beachedShow(CRGB *buf, uint32_t t, const String &words) {
+  if (t < 8000) {
+    uint8_t level = t < 6000 ? 255 : 255 - (t - 6000) * 200 / 2000;
     for (int y = 0; y < H; y++)
       for (int x = 0; x < W; x++)
-        if (SAD_FACE[y][x] == '#') { buf[y * W + x] = CRGB(40, 70, 200); buf[y * W + x].nscale8(fade); }
-    int tear = 7 + (s / 160) % 7;                     // a tear runs from the left eye
-    buf[tear * W + 4] = CRGB(90, 160, 255);
-    buf[tear * W + 4].nscale8(fade);
+        buf[y * W + x] = y < 7 ? blend(CRGB(35, 0, 55), CRGB(170, 55, 0), y * 255 / 6)
+                       : y < 10 ? ((x * 5 + y * 3 + t / 150) % 9 ? CRGB(0, 25, 70) : CRGB(150, 70, 20))   // sea, sun glints
+                       : CRGB(110, 80, 30);
+    int sunY = 2 + (int)(t * 7 / 8000);               // sinks into the sea at row 7
+    for (int y = sunY - 2; y <= sunY + 2; y++)
+      for (int x = 10; x <= 14; x++)
+        if (y >= 0 && y < 7 && (x - 12) * (x - 12) + (y - sunY) * (y - sunY) <= 5) buf[y * W + x] = CRGB(255, 170, 30);
+    // The tide: water over the sand pulls back up the beach, foam on its edge.
+    int tideEdge = t < 2000 ? H - (int)t * (H - 10) / 2000 : 10;
+    for (int y = 10; y < tideEdge && y < H; y++)
+      for (int x = 0; x < W; x++)
+        buf[y * W + x] = y == tideEdge - 1 ? CRGB(190, 210, 230) : CRGB(0, 50, 120);
+    int sx = 1, sy = 8;
+    bool bellyUp = false, dead = false;
+    if (t < 2000) sx = -SHARK_W + (int)t * (SHARK_W + 1) / 2000;
+    else if (t < 4600) {                              // three desperate flops
+      uint32_t f = (t - 2000) % 866;
+      int hop = sin8(f * 128 / 866) - 128;
+      sy = 8 - max(0, hop) / 32;
+      bellyUp = ((t - 2000) / 433) % 2;
+    } else { bellyUp = true; dead = true; }
+    drawShark(buf, sx, sy, bellyUp, dead);
+    nscale8(buf, NUM_LEDS, level);
     return true;
   }
-  uint32_t textT0 = 5200;
+  fill_solid(buf, NUM_LEDS, CRGB::Black);
+  uint32_t textT0 = 8000;
   uint32_t scoreT0 = textT0 + (textWidth(words, 2) + W) * 60;
-  if (t < scoreT0) return scrollOnce(buf, words, t, textT0, 2, 60, CRGB(40, 60, 170));
-  return scrollOnce(buf, scoreLine(show), t, scoreT0, 1, 65, CRGB(70, 70, 110));
+  if (t < scoreT0) return scrollOnce(buf, words, t, textT0, 2, 60, CRGB(150, 55, 10));
+  return scrollOnce(buf, scoreLine(show), t, scoreT0, 1, 65, CRGB(90, 60, 40));
 }
 
 // Draws the current show into buf. Returns false when nothing is playing.
@@ -367,8 +457,8 @@ static bool renderShow(CRGB *buf, uint32_t now) {
   switch (show.kind) {
     case SHOW_GOAL:    playing = goalShow(buf, t, "GOAL!"); break;
     case SHOW_WIN:     playing = goalShow(buf, t, "SHARKS WIN!"); break;
-    case SHOW_AGAINST: playing = sadShow(buf, t, "UGH."); break;
-    default:           playing = sadShow(buf, t, "FINAL"); break;
+    case SHOW_AGAINST: playing = hookedShow(buf, t, "UGH."); break;
+    default:           playing = beachedShow(buf, t, "FINAL"); break;
   }
   if (!playing) show.kind = SHOW_NONE;
   return playing;
