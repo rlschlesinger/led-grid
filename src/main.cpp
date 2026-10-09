@@ -2,8 +2,7 @@
 //
 // Wi-Fi: the board always runs its own network (AP_SSID below) at
 // http://192.168.4.1. Save your home Wi-Fi from the page's Setup panel and it
-// also joins that network; the IP it gets scrolls across the grid at boot and
-// http://ledgrid.local usually works too.
+// also joins that network; the IP it gets scrolls across the grid at boot.
 //
 // Every effect draws into frame[] in logical order (index y*W + x, x to the
 // right, y down). XY() maps that onto the panel's physical wiring, which the
@@ -13,7 +12,6 @@
 #include <FastLED.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include <ESPmDNS.h>
 #include <Preferences.h>
 #include <ArduinoOTA.h>
 
@@ -542,6 +540,7 @@ static String stateJson() {
   j += ",\"home\":" + ambientJson();
   j += ",\"game\":" + currentStatus();
   j += ",\"uptime\":" + String(millis() / 1000);
+  j += ",\"rssi\":" + String(WiFi.RSSI());
   j += ",\"reset\":" + String((int)esp_reset_reason());
   j += ",\"modes\":[";
   for (int i = 0; i < M_COUNT; i++) j += String(i ? "," : "") + "\"" + MODE_NAMES[i] + "\"";
@@ -549,8 +548,9 @@ static String stateJson() {
   for (int i = 0; i < PALETTE_COUNT; i++) j += String(i ? "," : "") + "\"" + PALETTE_NAMES[i] + "\"";
   j += "],\"wifi\":{\"ap\":\"" + String(AP_SSID) + "\",\"apIp\":\"" + WiFi.softAPIP().toString() + "\"";
   j += ",\"ssid\":\"" + jsonEscape(S.staSsid) + "\"";
-  j += ",\"connected\":" + String(staUp ? "true" : "false");
-  j += ",\"ip\":\"" + (staUp ? WiFi.localIP().toString() : String("")) + "\"}";
+  bool joined = WiFi.status() == WL_CONNECTED;
+  j += ",\"connected\":" + String(joined ? "true" : "false");
+  j += ",\"ip\":\"" + (joined ? WiFi.localIP().toString() : String("")) + "\"}";
   j += "}";
   return j;
 }
@@ -634,7 +634,10 @@ static void handleWifi() {
 }
 
 static void setupWeb() {
-  server.on("/", HTTP_GET, [] { server.send_P(200, "text/html", INDEX_HTML); });
+  server.on("/", HTTP_GET, [] {
+    server.sendHeader("Content-Encoding", "gzip");
+    server.send_P(200, "text/html", (const char *)INDEX_HTML_GZ, INDEX_HTML_GZ_LEN);
+  });
   server.on("/api/state", HTTP_GET, [] { server.send(200, "application/json", stateJson()); });
   server.on("/api/set", HTTP_POST, handleSet);
   server.on("/api/frame", HTTP_GET, [] { server.send(200, "text/plain", toHex(shown)); });
@@ -668,12 +671,15 @@ static void setupWifi() {
   }
 }
 
+static volatile bool otaActive = false;   // set while an OTA upload owns the LEDs
+
 // Wireless updates: `pio run -e ota -t upload`. The grid shows a progress bar.
 static void setupOta() {
   ArduinoOTA.setHostname(HOSTNAME);
   ArduinoOTA.setPassword(OTA_PASSWORD);
-  ArduinoOTA.setMdnsEnabled(false);    // pollWifi() runs mDNS itself
-  ArduinoOTA.onStart([] { FastLED.clear(true); });
+  ArduinoOTA.setMdnsEnabled(false);    // no mDNS: it never resolved here, and it's costly on a busy LAN
+  ArduinoOTA.onStart([] { otaActive = true; delay(30); FastLED.clear(true); });   // loop() stops drawing
+  ArduinoOTA.onEnd([] { otaActive = false; });
   ArduinoOTA.onProgress([](unsigned done, unsigned total) {
     static uint8_t shown = 255;
     uint8_t lit = (uint32_t)done * NUM_LEDS / total;
@@ -683,20 +689,49 @@ static void setupOta() {
     FastLED.setBrightness(255);
     FastLED.show();
   });
-  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("OTA error %u\n", e); });
+  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("OTA error %u\n", e); otaActive = false; });
   ArduinoOTA.begin();
+}
+
+// The web server and OTA run in their own task on core 0, so a slow or lossy
+// client can never stall the animation on core 1.
+static void webTask(void *) {
+  for (;;) {
+    server.handleClient();
+    ArduinoOTA.handle();
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
 }
 
 static void showNotice(const String &s) { noticeText = s; noticeStart = millis(); }
 
+// Once on home Wi-Fi the backup network goes off: running both at once costs
+// the ESP32 a lot of dropped packets. If home Wi-Fi is lost for a minute, the
+// backup network comes back until it reconnects.
+static bool apOn = true;
+
+static void setBackupAp(bool on) {
+  if (on == apOn) return;
+  apOn = on;
+  if (on) { WiFi.mode(WIFI_AP_STA); WiFi.softAP(AP_SSID, AP_PASS); }
+  else { WiFi.softAPdisconnect(true); WiFi.mode(WIFI_STA); }
+  Serial.printf("Backup network %s\n", on ? "on" : "off");
+}
+
 static void pollWifi() {
   if (!staTrying) return;
-  if (!staUp && WiFi.status() == WL_CONNECTED) {
+  bool connected = WiFi.status() == WL_CONNECTED;
+  static uint32_t lostSince = 0;
+  if (staUp) {
+    if (connected) { lostSince = 0; setBackupAp(false); }
+    else if (!lostSince) lostSince = millis();
+    else if (millis() - lostSince > 60000) setBackupAp(true);
+    return;
+  }
+  if (connected) {
     staUp = true;
     String ip = WiFi.localIP().toString();
-    Serial.printf("Joined \"%s\": http://%s  (or http://%s.local)\n", S.staSsid.c_str(), ip.c_str(), HOSTNAME);
-    MDNS.begin(HOSTNAME);
-    MDNS.addService("http", "tcp", 80);
+    Serial.printf("Joined \"%s\": http://%s\n", S.staSsid.c_str(), ip.c_str());
     showNotice(ip);
   } else if (!staUp && millis() - staStarted > STA_TIMEOUT_MS) {
     // A station that keeps retrying makes the access point hop channels and
@@ -755,11 +790,11 @@ void setup() {
   setupOta();
   setupSharks();
   setupAmbient();
+  xTaskCreatePinnedToCore(webTask, "web", 8192, nullptr, 1, nullptr, 0);
 }
 
 void loop() {
-  server.handleClient();
-  ArduinoOTA.handle();
+  if (otaActive) { delay(5); return; }   // the OTA progress bar owns the LEDs
   pollWifi();
   pollSerial();
 
