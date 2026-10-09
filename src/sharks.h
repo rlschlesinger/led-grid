@@ -511,23 +511,27 @@ static bool winShow(CRGB *buf, uint32_t t) {
   }
   if (t < 6000) {
     uint32_t s = t - 3200;
-    // gap over time: slam in, hold open, chomp, open, chomp, open wide, CHOMP
+    // gap over time: slam in and shut in one stroke, open, chomp, open wide, CHOMP
     struct Key { uint16_t at; int8_t gap; };
     static const Key KEYS[] = {
-      {0, 22}, {250, 8}, {700, 9}, {800, 8}, {950, 0}, {1250, 0}, {1500, 7},
-      {1650, 0}, {1950, 0}, {2250, 10}, {2350, 0}, {2800, 0},
+      {0, 22}, {320, 0}, {650, 0}, {950, 9}, {1100, 0}, {1400, 0}, {1750, 12},
+      {1880, 0}, {2800, 0},
     };
     int gap = 0;
     for (size_t i = 0; i + 1 < sizeof(KEYS) / sizeof(KEYS[0]); i++)
       if (s >= KEYS[i].at && s < KEYS[i + 1].at) {
-        gap = KEYS[i].gap + (int)(s - KEYS[i].at) * (KEYS[i + 1].gap - KEYS[i].gap) / (KEYS[i + 1].at - KEYS[i].at);
+        // Bites speed up as they close (p squared); openings ease out.
+        float p = (float)(s - KEYS[i].at) / (KEYS[i + 1].at - KEYS[i].at);
+        bool closing = KEYS[i + 1].gap < KEYS[i].gap;
+        float e = closing ? p * p : 1 - (1 - p) * (1 - p);
+        gap = KEYS[i].gap + (int)lroundf(e * (KEYS[i + 1].gap - KEYS[i].gap));
         break;
       }
     bool shut = gap == 0;
     int shake = shut ? ((s / 40) % 2 ? 1 : -1) : 0;
     drawJaws(buf, gap, shake);
-    if (s >= 2350) {                                  // the last chomp: white flash into teal
-      uint8_t f = s < 2800 ? 255 - (s - 2350) * 255 / 450 : 0;
+    if (s >= 1880) {                                  // the last chomp: a white flash
+      uint8_t f = s < 2330 ? 255 - (s - 1880) * 255 / 450 : 0;
       for (int i = 0; i < NUM_LEDS; i++) buf[i] = blend(buf[i], CRGB::White, f);
     }
     return true;
