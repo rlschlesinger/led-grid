@@ -15,6 +15,7 @@
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
+#include <ArduinoOTA.h>
 
 #include "font5x7.h"
 #include "webpage.h"
@@ -34,11 +35,13 @@ constexpr uint32_t STA_TIMEOUT_MS = 20000;   // give up on home Wi-Fi after this
 // ---- Modes and palettes -----------------------------------------------------
 enum Mode : uint8_t {
   M_SOLID, M_RAINBOW, M_PLASMA, M_FIRE, M_MATRIX, M_TWINKLE, M_LIFE,
-  M_RIPPLE, M_LAVA, M_RADAR, M_TEXT, M_DRAW, M_LAYOUT, M_COUNT
+  M_RIPPLE, M_LAVA, M_RADAR, M_HYPNO, M_TUNNEL, M_STARS, M_METABALLS,
+  M_KALEIDO, M_BOUNCE, M_PINWHEEL, M_RAIN, M_TEXT, M_DRAW, M_LAYOUT, M_COUNT
 };
 static const char *MODE_NAMES[M_COUNT] = {
   "Solid", "Rainbow", "Plasma", "Fire", "Matrix", "Twinkle", "Life",
-  "Ripple", "Lava lamp", "Radar", "Text", "Draw", "Layout test"
+  "Ripple", "Lava lamp", "Radar", "Hypnosis", "Tunnel", "Starfield", "Metaballs",
+  "Kaleidoscope", "Bounce", "Pinwheel", "Raindrops", "Text", "Draw", "Layout test"
 };
 
 static const char *PALETTE_NAMES[] = {"Rainbow", "Party", "Lava", "Ocean", "Forest", "Heat", "Cloud"};
@@ -284,6 +287,148 @@ static void fxRadar() {
     }
 }
 
+// Angle (0-255 = a full turn) and distance (16 per pixel) of every pixel from
+// the centre, for the radial effects. Filled once in setup().
+static uint8_t ANG[NUM_LEDS], DIST[NUM_LEDS];
+
+static void initPolar() {
+  for (int y = 0; y < H; y++)
+    for (int x = 0; x < W; x++) {
+      float dx = x - 7.5f, dy = y - 7.5f;
+      ANG[y * W + x] = (uint8_t)((atan2f(dy, dx) + PI) * (128.0f / PI));
+      DIST[y * W + x] = (uint8_t)min(255.0f, sqrtf(dx * dx + dy * dy) * 16);
+    }
+}
+
+// Two-armed spiral turning inward, the colours drifting outward.
+static void fxHypno() {
+  CRGBPalette16 pal = paletteFor(S.palette);
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t arm = ANG[i] * 2 + DIST[i] * 3 - vt / 3;
+    uint8_t b = sin8(arm);
+    b = scale8(b, b);                       // narrower bright stripes
+    frame[i] = ColorFromPalette(pal, DIST[i] - vt / 20, b);
+  }
+}
+
+// Concentric squares rushing outward.
+static void fxTunnel() {
+  CRGBPalette16 pal = paletteFor(S.palette);
+  for (int y = 0; y < H; y++)
+    for (int x = 0; x < W; x++) {
+      uint8_t d = max(abs(x * 2 - 15), abs(y * 2 - 15));     // 1..15, square rings
+      uint8_t band = sin8(d * 24 - vt / 3);
+      px(x, y) = ColorFromPalette(pal, d * 8 - vt / 12, scale8(band, band));
+    }
+}
+
+static void fxStars() {
+  constexpr int N = 24;
+  static float r[N], a[N], v[N];
+  static uint8_t hue[N];
+  static bool init = false;
+  static uint32_t last = 0;
+  auto respawn = [](int i) { r[i] = random8(5) / 4.0f; a[i] = random16() / 65536.0f * TWO_PI; v[i] = 0.04f + random8() / 1500.0f; hue[i] = random8(); };
+  if (!init) { for (int i = 0; i < N; i++) { respawn(i); r[i] = random8(110) / 10.0f; } init = true; }
+  if (!every(last, 16)) return;
+  for (int i = 0; i < NUM_LEDS; i++) frame[i].fadeToBlackBy(60);
+  CRGBPalette16 pal = paletteFor(S.palette);
+  for (int i = 0; i < N; i++) {
+    r[i] += v[i] * (1 + r[i] * 0.35f);          // faster as they near the edge
+    int x = lroundf(7.5f + cosf(a[i]) * r[i]), y = lroundf(7.5f + sinf(a[i]) * r[i]);
+    if (x < 0 || x >= W || y < 0 || y >= H) { respawn(i); continue; }
+    uint8_t b = min(255, (int)(r[i] * 40));
+    px(x, y) += S.palette == 0 ? CRGB(b, b, b) : ColorFromPalette(pal, hue[i], b);
+  }
+}
+
+static void fxMetaballs() {
+  CRGBPalette16 pal = S.palette == 0 ? CRGBPalette16(LavaColors_p) : paletteFor(S.palette);
+  float bx[3], by[3];
+  for (int k = 0; k < 3; k++) {
+    bx[k] = 7.5f + 6.5f * sinf(vt / (900.0f + k * 370) + k * 2.1f);
+    by[k] = 7.5f + 6.5f * cosf(vt / (1100.0f + k * 290) + k * 1.3f);
+  }
+  for (int y = 0; y < H; y++)
+    for (int x = 0; x < W; x++) {
+      float sum = 0;
+      for (int k = 0; k < 3; k++) {
+        float dx = x - bx[k], dy = y - by[k];
+        sum += 9.0f / (dx * dx + dy * dy + 1.0f);
+      }
+      px(x, y) = ColorFromPalette(pal, (uint8_t)min(240.0f, sum * 80), sum > 0.6f ? 255 : (uint8_t)(sum * 425));
+    }
+}
+
+// Noise in one eighth of the square, mirrored into all eight.
+static void fxKaleido() {
+  CRGBPalette16 pal = paletteFor(S.palette);
+  uint32_t z = vt / 2;
+  for (int y = 0; y < H / 2; y++)
+    for (int x = 0; x <= y; x++) {
+      CRGB c = ColorFromPalette(pal, inoise8(x * 50, y * 50, z) + vt / 40);
+      int xs[2] = {x, y}, ys[2] = {y, x};
+      for (int k = 0; k < 2; k++) {
+        int a = xs[k], b = ys[k];
+        px(7 - a, 7 - b) = c; px(8 + a, 7 - b) = c;
+        px(7 - a, 8 + b) = c; px(8 + a, 8 + b) = c;
+      }
+    }
+}
+
+static void fxBounce() {
+  constexpr int N = 4;
+  static float x[N], y[N], vx[N], vy[N];
+  static bool init = false;
+  static uint32_t last = 0;
+  if (!init) {
+    for (int i = 0; i < N; i++) { x[i] = random8(16); y[i] = random8(16); vx[i] = (random8(2) ? 1 : -1) * (0.15f + random8() / 1000.0f); vy[i] = (random8(2) ? 1 : -1) * (0.12f + random8() / 1000.0f); }
+    init = true;
+  }
+  if (!every(last, 16)) return;
+  for (int i = 0; i < NUM_LEDS; i++) frame[i].fadeToBlackBy(45);
+  CRGBPalette16 pal = paletteFor(S.palette);
+  for (int i = 0; i < N; i++) {
+    x[i] += vx[i]; y[i] += vy[i];
+    if (x[i] < 0) { x[i] = -x[i]; vx[i] = -vx[i]; }
+    if (x[i] > W - 1) { x[i] = 2 * (W - 1) - x[i]; vx[i] = -vx[i]; }
+    if (y[i] < 0) { y[i] = -y[i]; vy[i] = -vy[i]; }
+    if (y[i] > H - 1) { y[i] = 2 * (H - 1) - y[i]; vy[i] = -vy[i]; }
+    px(lroundf(x[i]), lroundf(y[i])) = ColorFromPalette(pal, i * 64 + vt / 50);
+  }
+}
+
+// Coloured blades turning, twisted further out.
+static void fxPinwheel() {
+  CRGBPalette16 pal = paletteFor(S.palette);
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t blade = ANG[i] * 3 + DIST[i] / 2 - vt / 6;
+    frame[i] = ColorFromPalette(pal, blade, qadd8(sin8(blade * 2) / 2, 60));
+  }
+}
+
+// Rings spreading from random points, like drops on a pond.
+static void fxRain() {
+  constexpr int N = 4;
+  static float cx[N], cy[N], r[N] = {99, 99, 99, 99};
+  static uint8_t hue[N];
+  static uint32_t last = 0;
+  if (!every(last, 16)) return;
+  for (int i = 0; i < NUM_LEDS; i++) frame[i].fadeToBlackBy(50);
+  CRGBPalette16 pal = paletteFor(S.palette);
+  for (int k = 0; k < N; k++) {
+    r[k] += 0.18f;
+    if (r[k] > 12 && random8() < 6) { cx[k] = random8(16); cy[k] = random8(16); r[k] = 0; hue[k] = random8(); }
+    if (r[k] > 12) continue;
+    uint8_t fade = 255 - (uint8_t)(r[k] * 20);
+    for (int y = 0; y < H; y++)
+      for (int x = 0; x < W; x++) {
+        float d = fabsf(sqrtf((x - cx[k]) * (x - cx[k]) + (y - cy[k]) * (y - cy[k])) - r[k]);
+        if (d < 1) px(x, y) += ColorFromPalette(pal, hue[k], scale8(fade, 255 - (uint8_t)(d * 255)));
+      }
+  }
+}
+
 static void fxText() {
   fill_solid(frame, NUM_LEDS, CRGB::Black);
   uint8_t sc = S.textSize;
@@ -309,7 +454,8 @@ static void fxLayout() {
 typedef void (*Effect)();
 static const Effect EFFECTS[M_COUNT] = {
   fxSolid, fxRainbow, fxPlasma, fxFire, fxMatrix, fxTwinkle, fxLife,
-  fxRipple, fxLava, fxRadar, fxText, fxDraw, fxLayout
+  fxRipple, fxLava, fxRadar, fxHypno, fxTunnel, fxStars, fxMetaballs,
+  fxKaleido, fxBounce, fxPinwheel, fxRain, fxText, fxDraw, fxLayout
 };
 
 // ---- Persistence ------------------------------------------------------------
@@ -492,6 +638,25 @@ static void setupWifi() {
   }
 }
 
+// Wireless updates: `pio run -e ota -t upload`. The grid shows a progress bar.
+static void setupOta() {
+  ArduinoOTA.setHostname(HOSTNAME);
+  ArduinoOTA.setPassword(OTA_PASSWORD);
+  ArduinoOTA.setMdnsEnabled(false);    // pollWifi() runs mDNS itself
+  ArduinoOTA.onStart([] { FastLED.clear(true); });
+  ArduinoOTA.onProgress([](unsigned done, unsigned total) {
+    static uint8_t shown = 255;
+    uint8_t lit = (uint32_t)done * NUM_LEDS / total;
+    if (lit == shown) return;
+    shown = lit;
+    for (uint16_t i = 0; i < NUM_LEDS; i++) leds[XY(i % W, i / W)] = i < lit ? CRGB(0, 40, 80) : CRGB::Black;
+    FastLED.setBrightness(255);
+    FastLED.show();
+  });
+  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("OTA error %u\n", e); });
+  ArduinoOTA.begin();
+}
+
 static void showNotice(const String &s) { noticeText = s; noticeStart = millis(); }
 
 static void pollWifi() {
@@ -554,12 +719,15 @@ void setup() {
   FastLED.setBrightness(S.brightness);
   FastLED.clear(true);
 
+  initPolar();
   setupWifi();
   setupWeb();
+  setupOta();
 }
 
 void loop() {
   server.handleClient();
+  ArduinoOTA.handle();
   pollWifi();
   pollSerial();
 
