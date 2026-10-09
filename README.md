@@ -40,7 +40,7 @@ The password lives in `ota.ini`, which is gitignored. To set it up on a fresh ch
 
 On home Wi-Fi the board follows the Sharks on api-web.nhle.com. It checks the week's schedule every 2 minutes and polls the live game every 10 seconds; the fetching runs on core 0.
 - Sharks goal: teal/white strobe, rings, a fin, "GOAL!", the score. A win gets its own show: a fin crossing to a quickening Jaws pulse, full-screen jaws chomping three times, a white flash, fireworks, "SHARKS WIN!", the score.
-- Goal against: the shark swims in, bites a fishing hook and is hauled thrashing up through the surface, then "UGH." and the score.
+- Goal against: the shark swims in and X-rays into a skeleton that sinks with a glowing red eye, then "UGH." and the score.
 - Loss: the tide goes out and strands the shark on a beach at sunset; it flops, then lies belly-up with a red eye, then "FINAL" and the score.
 - During a live game, Shark pong (also a regular effect) shows the real score, and the shows interrupt it.
 - Toggles and test buttons are in the Sharks panel on the page. Polling is a few seconds behind the broadcast and can run ahead of a delayed stream.

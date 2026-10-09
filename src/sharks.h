@@ -5,7 +5,7 @@
 // on a queue. The render loop on core 1 plays each as a full-screen show over
 // whatever effect is running:
 //   Sharks goal   teal/white strobe, rings, a fin swimming, "GOAL!", the score
-//   goal against  the shark is hooked and hauled out of the water, "UGH.", the score
+//   goal against  the shark swims in and X-rays into a skeleton, "UGH.", the score
 //   final         a win: a fin, JAWS chomping, fireworks, "SHARKS WIN!"; or the shark beached at sunset, "FINAL"
 #pragma once
 #include <HTTPClient.h>
@@ -306,7 +306,7 @@ static bool goalShow(CRGB *buf, uint32_t t, const String &words) {
   return scrollOnce(buf, scoreLine(show), t, scoreT0, 1, 55, CRGB::White);
 }
 
-// ---- Sad shows: the shark gets hooked, or washes up -------------------------
+// ---- Sad shows: the shark turns to bones, or washes up -------------------------
 // 14x7, facing right. '#' body, 'w' belly, 'o' eye.
 static const char *SHARK[7] = {
   "........#.....",
@@ -332,73 +332,76 @@ static void drawShark(CRGB *buf, int x0, int y0, bool bellyUp, bool deadEye, uin
     }
 }
 
-// Underwater, with the surface and a strip of sky in the top three rows so
-// being hauled "out of the water" reads at 16 px.
-constexpr int SURFACE = 2;
-static void water(CRGB *buf, uint32_t t) {
+// 14x7 fish skeleton, the same footprint as SHARK so one turns into the
+// other in place. '#' bone, 'o' the eye socket (glows red).
+static const char *BONES[7] = {
+  "#......#......",
+  ".#..#.#.#.###.",
+  "..#.#.#.#.#o.#",
+  "##############",
+  "..#.#.#.#.#..#",
+  ".#..#.#.#..##.",
+  "#.............",
+};
+
+static void drawBones(CRGB *buf, int x0, int y0, uint8_t level, uint8_t eye) {
+  for (int r = 0; r < SHARK_H; r++)
+    for (int c = 0; c < SHARK_W; c++) {
+      char ch = BONES[r][c];
+      int x = x0 + c, y = y0 + r;
+      if (ch == '.' || x < 0 || x >= W || y < 0 || y >= H) continue;
+      CRGB col = ch == '#' ? CRGB(225, 220, 195) : CRGB(eye, 0, 0);
+      col.nscale8(level);
+      buf[y * W + x] = col;
+    }
+}
+
+static void water(CRGB *buf, uint32_t t, uint8_t level) {
   for (int y = 0; y < H; y++)
-    for (int x = 0; x < W; x++)
-      buf[y * W + x] = y < SURFACE ? CRGB(10, 10, 25)
-                     : y == SURFACE ? ((x + t / 120) % 4 ? CRGB(30, 90, 140) : CRGB(120, 170, 210))
-                     : CRGB(0, 14 + y * 2, 40 + y * 4);
+    for (int x = 0; x < W; x++) buf[y * W + x] = CRGB(0, 14 + y * 2, 40 + y * 4).nscale8(level);
   for (int i = 0; i < 4; i++) {                       // bubbles drifting up
-    int bx = (i * 5 + 3) % W, by = H - 1 - (int)((t / 90 + i * 11) % (H - SURFACE));
-    if (by > SURFACE && by < H) buf[by * W + bx] = CRGB(50, 100, 150);
+    int bx = (i * 5 + 3) % W, by = H - 1 - (int)((t / 90 + i * 11) % H);
+    if (by >= 0 && by < H) buf[by * W + bx] = CRGB(50, 100, 150).nscale8(level);
   }
 }
 
-// Goal against: swims in, a hook drops, it bites, and gets hauled out thrashing.
-static bool hookedShow(CRGB *buf, uint32_t t, const String &words) {
-  const CRGB LINE(150, 150, 160), HOOK(230, 230, 240);
-  const int restX = 1, restY = 8, mouthX = restX + 13, mouthY = restY + 5;
+// Goal against: the shark swims in, an X-ray flicker, and it's just bones,
+// sinking with a glowing red eye.
+static bool skeletonShow(CRGB *buf, uint32_t t, const String &words) {
+  const int restX = 1, restY = 4;
   if (t < 400) {                                      // a red warning flash
     fill_solid(buf, NUM_LEDS, CRGB(150, 0, 0));
     nscale8(buf, NUM_LEDS, 255 - t * 255 / 400);
     return true;
   }
-  if (t < 7600) {
+  if (t < 7000) {
     uint32_t s = t - 400;
-    water(buf, s);
-    int sx = restX, sy = restY;
-    bool flail = false;
-    if (s < 1600) {                                   // swims in from the left, bobbing
-      sx = -SHARK_W + (int)s * (restX + SHARK_W) / 1600;
-      sy = restY + (sin8(s / 3) > 128 ? 0 : 1);
-    } else if (s >= 3000 && s < 3600) {               // hooked: thrashes in place
-      sx = restX + ((s / 60) % 2 ? 1 : -1);
-      flail = (s / 120) % 2;
-    } else if (s >= 3600) {                           // hauled up through the surface
-      uint32_t u = s - 3600;
-      sy = restY - (int)(u * (restY + SHARK_H) / 2400);
-      sx = restX + ((u / 80) % 2 ? 1 : -1);
-      flail = (u / 140) % 2;
+    if (s < 1800) {                                   // swims in from the left, bobbing
+      water(buf, s, 255);
+      int sx = -SHARK_W + (int)s * (restX + SHARK_W) / 1800;
+      drawShark(buf, sx, restY + (sin8(s / 3) > 128 ? 0 : 1), false, false);
+    } else if (s < 2300) {                            // a beat: it stops
+      water(buf, s, 255);
+      drawShark(buf, restX, restY, false, false);
+    } else if (s < 3300) {                            // X-ray: strobe between shark and bones
+      uint32_t u = s - 2300;
+      bool bones = (u / 70) % 2;
+      if (bones) fill_solid(buf, NUM_LEDS, CRGB(10, 10, 20));
+      else water(buf, s, 255);
+      if (u < 900 && (u / 70) % 4 == 1) fill_solid(buf, NUM_LEDS, CRGB(200, 200, 220));   // flashes
+      if (bones) drawBones(buf, restX, restY, 255, 230);
+      else drawShark(buf, restX, restY, false, false);
+    } else {                                          // bones alone, sinking and fading
+      uint32_t u = s - 3300;
+      uint8_t level = u < 2200 ? 255 : 255 - (u - 2200) * 255 / 1400;
+      fill_solid(buf, NUM_LEDS, CRGB(4, 4, 12));
+      uint8_t eye = 120 + (sin8(u / 3) >> 1);         // the eye socket pulses red
+      drawBones(buf, restX, restY + (int)(u / 700), level, scale8(eye, level));
     }
-    // Line and hook: drop by 2.4 s, the bite at 3.0 s, then the hook rides in its mouth.
-    int hookBottom = s < 800 ? -1 : s < 2400 ? (int)(s - 800) * mouthY / 1600 : sy + 5;
-    int hx = s >= 3000 ? sx + 13 : mouthX;
-    for (int y = 0; y < hookBottom - 3 && y < H; y++) if (hx >= 0 && hx < W) buf[y * W + hx] = LINE;
-    const char *hook[4] = {"..#", "..#", "#.#", ".##"};
-    drawShark(buf, sx, sy, flail, false);
-    for (int r = 0; r < 4; r++)                       // hook drawn over the shark so it's visible
-      for (int c = 0; c < 3; c++) {
-        int x = hx - 2 + c, y = hookBottom - 3 + r;
-        if (hook[r][c] == '#' && x >= 0 && x < W && y >= 0 && y < H) buf[y * W + x] = HOOK;
-      }
-    if (s >= 2400 && s < 3000 && (s / 150) % 2) {     // the bite: mouth snaps at the hook
-      int bx = min(W - 1, sx + 13), by = sy + 5;
-      buf[by * W + bx] = CRGB::White;
-    }
-    if (s >= 3600 && sy < SURFACE + 3 && sy + SHARK_H > 0) {   // splash as it breaks the surface
-      for (int i = 0; i < 10; i++) {
-        int x = (i * 3 + (s / 45) % 3) % W, y = (i * 7 + s / 35) % (SURFACE + 2);
-        buf[y * W + x] = CRGB(170, 210, 240);
-      }
-    }
-    if (s > 6200) nscale8(buf, NUM_LEDS, 255 - (s - 6200) * 200 / 1400);
     return true;
   }
   fill_solid(buf, NUM_LEDS, CRGB::Black);
-  uint32_t textT0 = 7600;
+  uint32_t textT0 = 7000;
   uint32_t scoreT0 = textT0 + (textWidth(words, 2) + W) * 55;
   if (t < scoreT0) return scrollOnce(buf, words, t, textT0, 2, 55, CRGB(40, 60, 170));
   return scrollOnce(buf, scoreLine(show), t, scoreT0, 1, 65, CRGB(70, 70, 110));
@@ -560,7 +563,7 @@ static bool renderShow(CRGB *buf, uint32_t now) {
   switch (show.kind) {
     case SHOW_GOAL:    playing = goalShow(buf, t, "GOAL!"); break;
     case SHOW_WIN:     playing = winShow(buf, t); break;
-    case SHOW_AGAINST: playing = hookedShow(buf, t, "UGH."); break;
+    case SHOW_AGAINST: playing = skeletonShow(buf, t, "UGH."); break;
     default:           playing = beachedShow(buf, t, "FINAL"); break;
   }
   if (!playing) show.kind = SHOW_NONE;
