@@ -5,7 +5,7 @@
 //   2. the time, a weather icon and the temperature
 //   3. by day, the sun on today's path across the sky; by night, the moon in
 //      its current phase among twinkling stars
-// Skipped while a Sharks game is live (pong owns the screen then).
+// Skipped while a Sharks or Knicks game is live (their game screens own it).
 //
 // Data, fetched on core 0 every 15 minutes from Open-Meteo (no key): the
 // temperature, conditions, sunrise, sunset and the UTC offset (so DST just
@@ -244,7 +244,7 @@ static bool renderCard(CRGB *buf, uint32_t nowMs) {
   gmtime_r(&realLocal, &rt);
   int quarter = rt.tm_hour * 4 + rt.tm_min / 15;
   bool onQuarter = rt.tm_min % 15 == 0;
-  if (!cardOn && S.clockCard && onQuarter && quarter != lastQuarter && !(S.sharks && gameLive)) {
+  if (!cardOn && S.clockCard && onQuarter && quarter != lastQuarter && !(S.sharks && gameLive) && !(S.knicks && knicksLive)) {
     triggerCard();
     utc = time(nullptr);
     local = utc + a.utcOffset;

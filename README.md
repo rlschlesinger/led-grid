@@ -50,3 +50,13 @@ On home Wi-Fi the board follows the Sharks on api-web.nhle.com. It checks the we
 ## Quarter-hour card
 
 At :00, :15, :30 and :45 (skipped during a live Sharks game) it shows the date, then the time with a weather icon and temperature, then the sky: by day, the sun on today's path from sunrise (left) to sunset (right); by night, the moon in its real phase. Weather, sunrise, sunset and the UTC offset come from Open-Meteo for home (Sparks, NV); the sun's height and the moon phase are calculated on the board. Toggle and "Show it now" are on the page. `POST /api/card/test?at=<unix time>` previews any time of day.
+
+## Knicks alerts
+
+From ESPN's public API (no key): the Knicks team page (`nextEvent`) every 2 minutes, then during a live game each team's score from ESPN's core API every 6 s (about 256 B each, over one kept-alive connection) and the clock every 18 s. Shows are tiered, because basketball scores constantly:
+- Knicks basket: a shot swishes in, "+2" or "+1". A three: a big "3" in a blue/orange burst.
+- Opponent basket: a 0.9 s dim red-edged flicker over whatever's playing.
+- Knicks run of 8+: a basketball on fire ("ON FIRE", "10-0 RUN"). Knicks take the lead: stripes and "KNICKS LEAD".
+- Opponent run of 8+ or taking the lead: a brick off the rim, then "0-8 RUN" or "LEAD LOST". Runs and leads share a 90 s cooldown.
+- Win: the NYC skyline with the Empire State crown in blue and orange, fireworks, "KNICKS WIN!". Loss: the windows go dark in the rain, "FINAL".
+- During the game, "Knicks court" shows the live score (Knicks orange on top) with a ball dribbling. Sharks pong takes priority if both teams are playing.

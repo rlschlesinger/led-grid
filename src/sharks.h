@@ -16,12 +16,16 @@ static const char *TEAM = "SJS";
 static const CRGB TEAL(0, 160, 175);      // Pacific Teal, brightened for LEDs
 static const CRGB ORANGE(234, 90, 0);
 
-enum ShowKind : uint8_t { SHOW_NONE, SHOW_GOAL, SHOW_AGAINST, SHOW_WIN, SHOW_LOSS };
+enum ShowKind : uint8_t {
+  SHOW_NONE, SHOW_GOAL, SHOW_AGAINST, SHOW_WIN, SHOW_LOSS,
+  K_SWISH, K_THREE, K_OPP, K_RUN, K_LEAD, K_BRICK, K_WIN, K_LOSS,   // Knicks (knicks.h)
+};
 
 struct GameEvent {
   ShowKind kind;
   uint8_t us, them;
   char opp[4];
+  uint8_t extra;      // Knicks: points in a basket, or the length of a run
 };
 
 static QueueHandle_t gameEvents;
@@ -29,6 +33,7 @@ static SemaphoreHandle_t gameLock;
 static String gameStatus = "{\"state\":\"idle\"}";   // JSON for the web page; guarded by gameLock
 static volatile bool gameLive = false;                // read by the render loop: play pong
 static volatile uint8_t liveUs = 0, liveThem = 0;
+static volatile bool knicksLive = false;               // set in knicks.h; Knicks court + card skip
 
 // ---- Fetching (core 0) ------------------------------------------------------
 static bool fetchJson(const String &url, JsonDocument &doc, const JsonDocument &filter) {
@@ -41,7 +46,8 @@ static bool fetchJson(const String &url, JsonDocument &doc, const JsonDocument &
   if (!http.begin(client, url)) return false;
   int code = http.GET();
   bool ok = false;
-  if (code == 200) ok = !deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+  if (code == 200) ok = !deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter),
+                     DeserializationOption::NestingLimit(32));   // ESPN nests past the default 10
   else Serial.printf("NHL %s -> HTTP %d\n", url.c_str(), code);
   http.end();
   return ok;
@@ -60,8 +66,8 @@ static String currentStatus() {
   return s;
 }
 
-static void pushEvent(ShowKind kind, int us, int them, const char *opp) {
-  GameEvent e{kind, (uint8_t)us, (uint8_t)them, {0}};
+static void pushEvent(ShowKind kind, int us, int them, const char *opp, int extra = 0) {
+  GameEvent e{kind, (uint8_t)us, (uint8_t)them, {0}, (uint8_t)extra};
   strlcpy(e.opp, opp, sizeof(e.opp));
   xQueueSend(gameEvents, &e, 0);
 }
@@ -246,7 +252,7 @@ static void fxPong() {
 }
 
 // ---- Shows (core 1) ---------------------------------------------------------
-static GameEvent show{SHOW_NONE, 0, 0, {0}};
+static GameEvent show{SHOW_NONE, 0, 0, {0}, 0};
 static uint32_t showStart = 0;
 
 static String scoreLine(const GameEvent &e) {
@@ -488,8 +494,9 @@ static void drawJaws(CRGB *buf, int gap, int shake) {
 }
 
 // Fireworks: a new burst every 300 ms, twelve sparks each, drooping as they fade.
-static void fireworks(CRGB *buf, uint32_t t, uint8_t level) {
-  static const CRGB COLORS[] = {TEAL, ORANGE, CRGB::White, CRGB(0, 220, 200)};
+static void fireworks(CRGB *buf, uint32_t t, uint8_t level, const CRGB *colors = nullptr) {
+  static const CRGB SHARKS_COLORS[] = {TEAL, ORANGE, CRGB::White, CRGB(0, 220, 200)};
+  const CRGB *COLORS = colors ? colors : SHARKS_COLORS;
   for (int b = max(0, (int)(t / 300) - 3); b <= (int)(t / 300); b++) {
     uint32_t age = t - b * 300;
     if (age > 1000) continue;
@@ -567,6 +574,8 @@ static bool winShow(CRGB *buf, uint32_t t) {
   return scrollOnce(buf, scoreLine(show), s, scoreT0, 1, 55, CRGB::White);
 }
 
+static bool knicksShow(CRGB *buf, uint32_t t, const GameEvent &e);   // knicks.h
+
 // Draws the current show into buf. Returns false when nothing is playing.
 static bool renderShow(CRGB *buf, uint32_t now) {
   if (show.kind == SHOW_NONE) {
@@ -577,6 +586,11 @@ static bool renderShow(CRGB *buf, uint32_t now) {
   }
   uint32_t t = now - showStart;
   bool playing;
+  if (show.kind >= K_SWISH) {
+    playing = knicksShow(buf, t, show);
+    if (!playing) show.kind = SHOW_NONE;
+    return playing;
+  }
   switch (show.kind) {
     case SHOW_GOAL:    playing = goalShow(buf, t, "GOAL!"); break;
     case SHOW_WIN:     playing = winShow(buf, t); break;

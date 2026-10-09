@@ -56,12 +56,28 @@ details summary{cursor:pointer;font-weight:600}
 <section>
   <h2>Sharks goal alerts</h2>
   <p id="game" class="game">…</p>
-  <div class="checks" style="margin:10px 0"><label><input type="checkbox" id="sharks"> Alerts on</label><label><input type="checkbox" id="gamePong"> Shark pong during games</label></div>
+  <div class="checks" style="margin:10px 0"><label><input type="checkbox" id="sharks"> Alerts on</label><label><input type="checkbox" id="gamePong"> Game screens during games (Shark pong, Knicks court)</label></div>
   <div class="tools">
     <button data-test="goal">Test goal</button>
     <button data-test="against">Test against</button>
     <button data-test="win">Test win</button>
     <button data-test="loss">Test loss</button>
+  </div>
+</section>
+
+<section>
+  <h2>Knicks alerts</h2>
+  <p id="knicksGame" class="game">…</p>
+  <div class="checks" style="margin:10px 0"><label><input type="checkbox" id="knicks"> Alerts on</label></div>
+  <div class="tools">
+    <button data-ktest="swish">Basket</button>
+    <button data-ktest="three">Three</button>
+    <button data-ktest="opp">Opp. basket</button>
+    <button data-ktest="run">Knicks run</button>
+    <button data-ktest="lead">Knicks lead</button>
+    <button data-ktest="brick">Opp. run</button>
+    <button data-ktest="win">Win</button>
+    <button data-ktest="loss">Loss</button>
   </div>
 </section>
 
@@ -166,8 +182,9 @@ function apply(s, fromServer) {
   put('textSize', s.textSize);
   put('maxMilliamps', s.maxMilliamps);
   put('cycleMins', s.cycleMins);
-  for (const k of ['serpentine', 'columns', 'flipX', 'flipY', 'sharks', 'gamePong', 'clockCard', 'autoCycle']) $(k).checked = s[k];
+  for (const k of ['serpentine', 'columns', 'flipX', 'flipY', 'sharks', 'knicks', 'gamePong', 'clockCard', 'autoCycle']) $(k).checked = s[k];
   $('game').textContent = gameText(s.game || {});
+  $('knicksGame').textContent = knicksText(s.knicksGame || {});
   const h = s.home || {};
   $('homeInfo').textContent = 'Date, time, weather, then the sun or moon. Home: ' + (h.city || '?') + (h.temp !== undefined ? ` · ${h.temp}°F now` : '');
   const name = s.modes[s.mode];
@@ -199,6 +216,24 @@ function gameText(g) {
     default: return 'Checking the schedule…';
   }
 }
+function knicksText(g) {
+  const vs = g.home ? `vs ${g.opp}` : `at ${g.opp}`;
+  switch (g.state) {
+    case 'live': return `NYK ${g.us} – ${g.them} ${g.opp} · ${g.period}${g.clock ? ' ' + g.clock : ''}`;
+    case 'final': return `Final: NYK ${g.us} – ${g.them} ${g.opp}`;
+    case 'next': {
+      const d = new Date(g.start);
+      return `Next: ${vs}, ${d.toLocaleDateString([], {weekday: 'short', month: 'short', day: 'numeric'})} ${d.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}`;
+    }
+    case 'off': return 'Alerts are off.';
+    case 'offline': return 'Needs home Wi-Fi to follow games.';
+    case 'none': return 'No Knicks games scheduled.';
+    default: return 'Checking the schedule…';
+  }
+}
+document.querySelectorAll('[data-ktest]').forEach(b =>
+  b.onclick = () => fetch('/api/knicks/test', {method: 'POST', body: new URLSearchParams({kind: b.dataset.ktest})}));
+$('knicks').addEventListener('change', e => set({knicks: e.target.checked ? 1 : 0}));
 document.querySelectorAll('[data-test]').forEach(b =>
   b.onclick = () => fetch('/api/sharks/test', {method: 'POST', body: new URLSearchParams({kind: b.dataset.test})}));
 $('sharks').addEventListener('change', e => set({sharks: e.target.checked ? 1 : 0}));
@@ -209,7 +244,11 @@ $('cycleMins').addEventListener('change', e => set({cycleMins: e.target.value}))
 $('cardTest').onclick = () => fetch('/api/card/test', {method: 'POST'});
 setInterval(async () => {
   if (document.visibilityState !== 'visible') return;
-  try { const s = await (await fetch('/api/state')).json(); $('game').textContent = gameText(s.game || {}); } catch (e) {}
+  try {
+    const s = await (await fetch('/api/state')).json();
+    $('game').textContent = gameText(s.game || {});
+    $('knicksGame').textContent = knicksText(s.knicksGame || {});
+  } catch (e) {}
 }, 10000);
 
 // Sliders: send while dragging, throttled.
