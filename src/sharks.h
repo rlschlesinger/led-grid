@@ -6,7 +6,7 @@
 // whatever effect is running:
 //   Sharks goal   teal/white strobe, rings, a fin swimming, "GOAL!", the score
 //   goal against  the shark is hooked and hauled out of the water, "UGH.", the score
-//   final         the goal show with "SHARKS WIN!", or the shark beached at sunset, "FINAL"
+//   final         a win: a fin, JAWS chomping, fireworks, "SHARKS WIN!"; or the shark beached at sunset, "FINAL"
 #pragma once
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -444,6 +444,105 @@ static bool beachedShow(CRGB *buf, uint32_t t, const String &words) {
   return scrollOnce(buf, scoreLine(show), t, scoreT0, 1, 65, CRGB(90, 60, 40));
 }
 
+// ---- The win: fin, JAWS, fireworks ------------------------------------------
+// Full-screen jaws with big triangular fangs (5 wide, 3 tall, every 6 px).
+// Closed, the top fangs fill rows 5-7 and the bottom ones rows 8-10, meshing
+// between each other. `gap` opens them; `shake` jolts them sideways.
+static void drawJaws(CRGB *buf, int gap, int shake) {
+  const CRGB SKIN(85, 100, 125), GUM(170, 30, 60), TOOTH(240, 240, 235), THROAT(25, 0, 8);
+  int top = 5 - gap / 2;              // first row of the top fangs
+  int bot = 10 + (gap - gap / 2);     // last row of the bottom fangs
+  auto fang = [](int x, int k) { int m = x % 6; return m >= k && m <= 4 - k; };   // row k from the base
+  for (int y = 0; y < H; y++)
+    for (int xx = 0; xx < W; xx++) {
+      int x = xx + shake + 60;        // keep the modulo positive
+      CRGB c = THROAT;
+      if (y < top - 2) c = SKIN;
+      else if (y < top) c = GUM;
+      else if (y <= top + 2 && fang(x, y - top)) c = TOOTH;
+      if (y > bot + 2) c = SKIN;
+      else if (y > bot) c = GUM;
+      else if (y >= bot - 2 && fang(x + 3, bot - y)) c = TOOTH;
+      buf[y * W + xx] = c;
+    }
+}
+
+// Fireworks: a new burst every 300 ms, twelve sparks each, drooping as they fade.
+static void fireworks(CRGB *buf, uint32_t t, uint8_t level) {
+  static const CRGB COLORS[] = {TEAL, ORANGE, CRGB::White, CRGB(0, 220, 200)};
+  for (int b = max(0, (int)(t / 300) - 3); b <= (int)(t / 300); b++) {
+    uint32_t age = t - b * 300;
+    if (age > 1000) continue;
+    uint32_t h = b * 2654435761u;
+    float cx = 3 + h % 10, cy = 2 + (h >> 8) % 8;
+    float r = age / 110.0f, droop = (age / 400.0f) * (age / 400.0f);
+    uint8_t fade = 255 - age * 255 / 1000;
+    CRGB c = COLORS[b % 4];
+    c.nscale8(scale8(fade, level));
+    for (int k = 0; k < 12; k++) {
+      float a = k * (TWO_PI / 12) + (h % 7) * 0.1f;
+      int x = lroundf(cx + cosf(a) * r), y = lroundf(cy + sinf(a) * r + droop);
+      if (x >= 0 && x < W && y >= 0 && y < H) buf[y * W + x] += c;
+    }
+    if (age < 120) buf[(int)cy * W + (int)cx] = CRGB::White;
+  }
+}
+
+static bool winShow(CRGB *buf, uint32_t t) {
+  fill_solid(buf, NUM_LEDS, CRGB::Black);
+  if (t < 3200) {
+    // dun-dun... dun-dun, quickening, while a fin crosses faster and faster
+    static const uint16_t BEATS[] = {0, 650, 1200, 1650, 2000, 2300, 2550, 2750, 2920, 3060};
+    uint8_t pulse = 0;
+    for (uint16_t b : BEATS)
+      if (t >= b && t < b + 220u) pulse = max<uint8_t>(pulse, 255 - (t - b) * 255 / 220);
+    fill_solid(buf, NUM_LEDS, CRGB(90, 0, 10).scale8(pulse));
+    for (int y = 12; y < H; y++)
+      for (int x = 0; x < W; x++) {
+        uint8_t v = sin8(x * 32 + y * 40 + t / 3);
+        if (y > 12 || v > 150) buf[y * W + x] = CRGB(0, 70, 85);
+      }
+    float p = t / 3200.0f;
+    int fx = -2 + (int)(p * p * (W + 9));             // accelerating
+    for (int k = 0; k < 6; k++)
+      for (int x = fx - 6; x <= fx - k; x++)
+        if (x >= 0 && x < W) buf[(11 - k) * W + x] = k == 0 ? CRGB(120, 120, 130) : CRGB(200, 200, 210);
+    return true;
+  }
+  if (t < 6000) {
+    uint32_t s = t - 3200;
+    // gap over time: slam in, hold open, chomp, open, chomp, open wide, CHOMP
+    struct Key { uint16_t at; int8_t gap; };
+    static const Key KEYS[] = {
+      {0, 22}, {250, 8}, {700, 9}, {800, 8}, {950, 0}, {1250, 0}, {1500, 7},
+      {1650, 0}, {1950, 0}, {2250, 10}, {2350, 0}, {2800, 0},
+    };
+    int gap = 0;
+    for (size_t i = 0; i + 1 < sizeof(KEYS) / sizeof(KEYS[0]); i++)
+      if (s >= KEYS[i].at && s < KEYS[i + 1].at) {
+        gap = KEYS[i].gap + (int)(s - KEYS[i].at) * (KEYS[i + 1].gap - KEYS[i].gap) / (KEYS[i + 1].at - KEYS[i].at);
+        break;
+      }
+    bool shut = gap == 0;
+    int shake = shut ? ((s / 40) % 2 ? 1 : -1) : 0;
+    drawJaws(buf, gap, shake);
+    if (s >= 2350) {                                  // the last chomp: white flash into teal
+      uint8_t f = s < 2800 ? 255 - (s - 2350) * 255 / 450 : 0;
+      for (int i = 0; i < NUM_LEDS; i++) buf[i] = blend(buf[i], CRGB::White, f);
+    }
+    return true;
+  }
+  uint32_t s = t - 6000;
+  if (s < 3000) { fireworks(buf, s, 255); return true; }
+  uint32_t textT0 = 3000;
+  const String words = "SHARKS WIN!";
+  uint32_t scoreT0 = textT0 + (textWidth(words, 2) + W) * 35;
+  teamWaves(buf, t, s < scoreT0 ? 140 : 60);
+  fireworks(buf, s, 90);
+  if (s < scoreT0) return scrollOnce(buf, words, s, textT0, 2, 35, CRGB::White);
+  return scrollOnce(buf, scoreLine(show), s, scoreT0, 1, 55, CRGB::White);
+}
+
 // Draws the current show into buf. Returns false when nothing is playing.
 static bool renderShow(CRGB *buf, uint32_t now) {
   if (show.kind == SHOW_NONE) {
@@ -456,7 +555,7 @@ static bool renderShow(CRGB *buf, uint32_t now) {
   bool playing;
   switch (show.kind) {
     case SHOW_GOAL:    playing = goalShow(buf, t, "GOAL!"); break;
-    case SHOW_WIN:     playing = goalShow(buf, t, "SHARKS WIN!"); break;
+    case SHOW_WIN:     playing = winShow(buf, t); break;
     case SHOW_AGAINST: playing = hookedShow(buf, t, "UGH."); break;
     default:           playing = beachedShow(buf, t, "FINAL"); break;
   }
