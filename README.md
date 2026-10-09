@@ -44,3 +44,7 @@ On home Wi-Fi the board follows the Sharks on api-web.nhle.com. It checks the we
 - Loss: the shark rolls belly-up and floats away, a tombstone reading RIP rises, then "FINAL" and the score.
 - During a live game, Shark pong (also a regular effect) shows the real score, and the shows interrupt it.
 - Toggles and test buttons are in the Sharks panel on the page. Polling is a few seconds behind the broadcast and can run ahead of a delayed stream.
+
+## Quarter-hour card
+
+At :00, :15, :30 and :45 (skipped during a live Sharks game) it shows the date, then the time with a weather icon and temperature, then the sky: by day, the sun on today's path from sunrise (left) to sunset (right); by night, the moon in its real phase. Weather, sunrise, sunset and the UTC offset come from Open-Meteo for home (Sparks, NV); the sun's height and the moon phase are calculated on the board. Toggle and "Show it now" are on the page. `POST /api/card/test?at=<unix time>` previews any time of day.

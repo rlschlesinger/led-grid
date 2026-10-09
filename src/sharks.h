@@ -37,7 +37,7 @@ static bool fetchJson(const String &url, JsonDocument &doc, const JsonDocument &
   HTTPClient http;
   http.useHTTP10(true);                    // no chunked encoding, so the stream parses directly
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);   // ".../now" redirects to a date
-  http.setTimeout(8000);
+  http.setTimeout(4000);                   // the parser spins this long on a stall; keep it under the 5 s watchdog
   if (!http.begin(client, url)) return false;
   int code = http.GET();
   bool ok = false;
@@ -175,7 +175,9 @@ static void sharksTask(void *) {
 static void setupSharks() {
   gameEvents = xQueueCreate(6, sizeof(GameEvent));
   gameLock = xSemaphoreCreateMutex();
-  xTaskCreatePinnedToCore(sharksTask, "sharks", 12288, nullptr, 1, nullptr, 0);
+  // Priority 0, the same as the idle task: Stream::timedRead busy-waits while a
+  // response stalls, and above idle that starves IDLE0 into a task-watchdog reset.
+  xTaskCreatePinnedToCore(sharksTask, "sharks", 12288, nullptr, 0, nullptr, 0);
 }
 
 // ---- Shark pong (core 1) ----------------------------------------------------

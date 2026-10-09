@@ -70,6 +70,13 @@ details summary{cursor:pointer;font-weight:600}
   </div>
 </section>
 
+<section>
+  <h2>Quarter-hour card</h2>
+  <p class="hint" id="homeInfo" style="margin:0 0 8px"></p>
+  <div class="checks" style="margin:10px 0"><label><input type="checkbox" id="clockCard"> Show on :00 :15 :30 :45</label></div>
+  <div class="tools"><button id="cardTest">Show it now</button></div>
+</section>
+
 <section id="drawPanel" class="hidden">
   <h2>Draw</h2>
   <canvas id="paint" width="16" height="16"></canvas>
@@ -161,8 +168,10 @@ function apply(s, fromServer) {
   put('text', s.text);
   put('textSize', s.textSize);
   put('maxMilliamps', s.maxMilliamps);
-  for (const k of ['serpentine', 'columns', 'flipX', 'flipY', 'sharks', 'gamePong']) $(k).checked = s[k];
+  for (const k of ['serpentine', 'columns', 'flipX', 'flipY', 'sharks', 'gamePong', 'clockCard']) $(k).checked = s[k];
   $('game').textContent = gameText(s.game || {});
+  const h = s.home || {};
+  $('homeInfo').textContent = 'Date, time, weather, then the sun or moon. Home: ' + (h.city || '?') + (h.temp !== undefined ? ` · ${h.temp}°F now` : '');
   const name = s.modes[s.mode];
   $('textOpts').classList.toggle('hidden', name !== 'Text');
   const drawing = name === 'Draw';
@@ -196,6 +205,8 @@ document.querySelectorAll('[data-test]').forEach(b =>
   b.onclick = () => fetch('/api/sharks/test', {method: 'POST', body: new URLSearchParams({kind: b.dataset.test})}));
 $('sharks').addEventListener('change', e => set({sharks: e.target.checked ? 1 : 0}));
 $('gamePong').addEventListener('change', e => set({gamePong: e.target.checked ? 1 : 0}));
+$('clockCard').addEventListener('change', e => set({clockCard: e.target.checked ? 1 : 0}));
+$('cardTest').onclick = () => fetch('/api/card/test', {method: 'POST'});
 setInterval(async () => {
   if (document.visibilityState !== 'visible') return;
   try { const s = await (await fetch('/api/state')).json(); $('game').textContent = gameText(s.game || {}); } catch (e) {}

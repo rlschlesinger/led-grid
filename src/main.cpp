@@ -74,6 +74,7 @@ struct Settings {
   bool flipY = false;
   bool sharks = true;             // goal alerts
   bool gamePong = true;           // Shark pong takes over while a game is live
+  bool clockCard = true;          // date/time/weather/sky card on the quarter hour
   uint16_t maxMilliamps = 500;     // safe on USB power; raise in Setup with a real supply
   String staSsid;
   String staPass;
@@ -455,6 +456,7 @@ static void fxLayout() {
 }
 
 #include "sharks.h"
+#include "ambient.h"
 
 typedef void (*Effect)();
 static const Effect EFFECTS[M_COUNT] = {
@@ -479,6 +481,7 @@ static void loadSettings() {
   S.flipY = prefs.getBool("fy", S.flipY);
   S.sharks = prefs.getBool("sharks", S.sharks);
   S.gamePong = prefs.getBool("gpong", S.gamePong);
+  S.clockCard = prefs.getBool("card", S.clockCard);
   S.maxMilliamps = constrain(prefs.getUShort("ma", S.maxMilliamps), 200, 20000);
   S.staSsid = prefs.getString("ssid", "");
   S.staPass = prefs.getString("pass", "");
@@ -502,6 +505,7 @@ static void saveSettings() {
   prefs.putUShort("ma", S.maxMilliamps);
   prefs.putBool("sharks", S.sharks);
   prefs.putBool("gpong", S.gamePong);
+  prefs.putBool("card", S.clockCard);
   if (canvasDirty) { prefs.putBytes("canvas", canvas, sizeof(canvas)); canvasDirty = false; }
   prefs.end();
 }
@@ -534,6 +538,8 @@ static String stateJson() {
   j += ",\"maxMilliamps\":" + String(S.maxMilliamps);
   j += ",\"sharks\":" + String(S.sharks ? "true" : "false");
   j += ",\"gamePong\":" + String(S.gamePong ? "true" : "false");
+  j += ",\"clockCard\":" + String(S.clockCard ? "true" : "false");
+  j += ",\"home\":" + ambientJson();
   j += ",\"game\":" + currentStatus();
   j += ",\"uptime\":" + String(millis() / 1000);
   j += ",\"reset\":" + String((int)esp_reset_reason());
@@ -579,6 +585,7 @@ static void handleSet() {
   if (server.hasArg("flipY")) S.flipY = argBool("flipY");
   if (server.hasArg("sharks")) S.sharks = argBool("sharks");
   if (server.hasArg("gamePong")) S.gamePong = argBool("gamePong");
+  if (server.hasArg("clockCard")) S.clockCard = argBool("clockCard");
   if (server.hasArg("maxMilliamps")) {
     S.maxMilliamps = constrain(server.arg("maxMilliamps").toInt(), 200, 20000);
     FastLED.setMaxPowerInVoltsAndMilliamps(5, S.maxMilliamps);
@@ -634,6 +641,7 @@ static void setupWeb() {
   server.on("/api/canvas", HTTP_GET, [] { server.send(200, "text/plain", toHex(canvas)); });
   server.on("/api/canvas", HTTP_POST, handleCanvasPost);
   server.on("/api/wifi", HTTP_POST, handleWifi);
+  server.on("/api/card/test", HTTP_POST, [] { triggerCard(strtoul(server.arg("at").c_str(), nullptr, 10)); server.send(204); });
   server.on("/api/sharks/test", HTTP_POST, [] {
     String k = server.arg("kind");
     ShowKind kind = k == "against" ? SHOW_AGAINST : k == "win" ? SHOW_WIN : k == "loss" ? SHOW_LOSS : SHOW_GOAL;
@@ -746,6 +754,7 @@ void setup() {
   setupWeb();
   setupOta();
   setupSharks();
+  setupAmbient();
 }
 
 void loop() {
@@ -769,6 +778,8 @@ void loop() {
   static CRGB noticeBuf[NUM_LEDS], showBuf[NUM_LEDS];
   bool showing = renderShow(showBuf, now);
   if (showing) {
+    out = showBuf;
+  } else if (renderCard(showBuf, now)) {   // the quarter-hour card
     out = showBuf;
   } else if (noticeText.length()) {
     int total = textWidth(noticeText, 1) + W;
