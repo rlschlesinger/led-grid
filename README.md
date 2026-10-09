@@ -27,6 +27,8 @@
 2. Pick **Layout test** and toggle **Setup → Panel layout** until white is top-left and the yellow dot runs left→right along the top row.
 3. Optional: home Wi-Fi, either from **Setup → Home Wi-Fi** on the page, or over USB with `python3 tools/set-wifi.py "Network name"` (hidden password prompt). The board restarts, joins your network and scrolls its IP across the grid. Once joined, the LED-Grid network switches off (running both costs the ESP32 a lot of dropped packets) and comes back if home Wi-Fi is lost for a minute. If your Wi-Fi can't be joined within 20 s at boot, it stays on LED-Grid until the next restart.
 
+Idle: between quarter-hour cards it auto-cycles (shuffled, every 3 min by default, with a fade) through every animation except Shark pong, Solid, Text, Draw and Layout test, in the chosen palette. Picking an effect by hand turns cycling off. Palettes include Halloween (purple/orange/green, with a "witch fire" variant for Fire).
+
 Effects: Solid, Rainbow, Plasma, Fire, Matrix, Twinkle, Life, Ripple, Lava lamp, Radar, Hypnosis, Tunnel, Starfield, Metaballs, Kaleidoscope, Bounce, Pinwheel, Raindrops, scrolling Text, Draw (paint pixels or upload an image), Layout test. Settings and drawings survive reboots.
 
 Change the data pin, AP name and AP password at the top of `src/main.cpp`.

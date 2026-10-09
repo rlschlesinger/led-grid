@@ -42,7 +42,25 @@ static const char *MODE_NAMES[M_COUNT] = {
   "Kaleidoscope", "Bounce", "Pinwheel", "Raindrops", "Shark pong", "Text", "Draw", "Layout test"
 };
 
-static const char *PALETTE_NAMES[] = {"Rainbow", "Party", "Lava", "Ocean", "Forest", "Heat", "Cloud"};
+static const char *PALETTE_NAMES[] = {"Rainbow", "Party", "Lava", "Ocean", "Forest", "Heat", "Cloud", "Halloween"};
+constexpr uint8_t PAL_HALLOWEEN = 7;
+
+// Purple, orange and green in bands that repeat twice, so every effect gets
+// all three whichever slice of the palette it uses (noise effects mostly use
+// the middle), while neighbouring entries still blend smoothly.
+static const CRGBPalette16 HalloweenColors_p(
+  CRGB(60, 0, 120), CRGB(130, 20, 220), CRGB(255, 80, 0), CRGB(255, 140, 20),
+  CRGB(40, 200, 0), CRGB(120, 255, 20), CRGB(90, 0, 160), CRGB(150, 40, 240),
+  CRGB(230, 60, 0), CRGB(255, 120, 10), CRGB(30, 160, 0), CRGB(90, 230, 0),
+  CRGB(70, 0, 140), CRGB(140, 30, 230), CRGB(255, 100, 0), CRGB(60, 0, 120));
+
+// Fire needs a palette ordered by heat. In Halloween: "witch fire", black to
+// purple to toxic green to pale green.
+static const CRGBPalette16 WitchFire_p(
+  CRGB(0, 0, 0), CRGB(10, 0, 20), CRGB(30, 0, 60), CRGB(60, 0, 110),
+  CRGB(90, 0, 160), CRGB(110, 20, 190), CRGB(70, 60, 120), CRGB(30, 120, 40),
+  CRGB(20, 170, 0), CRGB(40, 210, 0), CRGB(80, 240, 0), CRGB(120, 255, 20),
+  CRGB(160, 255, 60), CRGB(190, 255, 110), CRGB(220, 255, 170), CRGB(240, 255, 210));
 constexpr uint8_t PALETTE_COUNT = sizeof(PALETTE_NAMES) / sizeof(PALETTE_NAMES[0]);
 
 static CRGBPalette16 paletteFor(uint8_t i) {
@@ -53,6 +71,7 @@ static CRGBPalette16 paletteFor(uint8_t i) {
     case 4: return ForestColors_p;
     case 5: return HeatColors_p;
     case 6: return CloudColors_p;
+    case PAL_HALLOWEEN: return HalloweenColors_p;
     default: return RainbowColors_p;
   }
 }
@@ -73,6 +92,8 @@ struct Settings {
   bool sharks = true;             // goal alerts
   bool gamePong = true;           // Shark pong takes over while a game is live
   bool clockCard = true;          // date/time/weather/sky card on the quarter hour
+  bool autoCycle = true;          // rotate through the animations between cards
+  uint8_t cycleMins = 3;          // minutes per animation
   uint16_t maxMilliamps = 500;     // safe on USB power; raise in Setup with a real supply
   String staSsid;
   String staPass;
@@ -147,7 +168,8 @@ static void fxSolid() { fill_solid(frame, NUM_LEDS, colorOf(S.color)); }
 static void fxRainbow() {
   uint8_t base = vt / 12;
   for (int y = 0; y < H; y++)
-    for (int x = 0; x < W; x++) px(x, y) = CHSV(base + (x + y) * 8, 255, 255);
+    for (int x = 0; x < W; x++)
+      px(x, y) = S.palette ? ColorFromPalette(paletteFor(S.palette), base + (x + y) * 8) : CRGB(CHSV(base + (x + y) * 8, 255, 255));
 }
 
 static void fxPlasma() {
@@ -173,7 +195,8 @@ static void fxFire() {
       if (random8() < 140) heat[x][random8(2)] = qadd8(heat[x][0], random8(160, 255));
     }
   }
-  CRGBPalette16 pal = S.palette == 0 ? CRGBPalette16(HeatColors_p) : paletteFor(S.palette);
+  CRGBPalette16 pal = S.palette == 0 ? CRGBPalette16(HeatColors_p)
+                    : S.palette == PAL_HALLOWEEN ? CRGBPalette16(WitchFire_p) : paletteFor(S.palette);
   for (int x = 0; x < W; x++)
     for (int y = 0; y < H; y++) px(x, H - 1 - y) = ColorFromPalette(pal, scale8(heat[x][y], 240));
 }
@@ -190,8 +213,10 @@ static void fxMatrix() {
   if (!every(last, 30)) return;
   CRGB c = colorOf(S.color);
   if (S.color == 0xFF5000) c = CRGB(0, 255, 70);   // the default orange looks wrong here
+  CRGBPalette16 pal = paletteFor(S.palette);
   for (int i = 0; i < NUM_LEDS; i++) frame[i].fadeToBlackBy(40);
   for (int x = 0; x < W; x++) {
+    if (S.palette) c = ColorFromPalette(pal, x * 16);   // a palette colours each column
     if (++tick[x] < rate[x]) continue;
     tick[x] = 0;
     if (head[x] >= 0 && head[x] < H) px(x, head[x]) = c;
@@ -284,7 +309,7 @@ static void fxRadar() {
       uint8_t angle = (uint8_t)((a + PI) * (128.0f / PI));
       uint8_t behind = sweep - angle;                       // wraps, by design
       uint8_t b = behind < 160 ? 255 - behind * 255 / 160 : 0;
-      px(x, y) = c;
+      px(x, y) = S.palette ? ColorFromPalette(paletteFor(S.palette), angle) : c;
       px(x, y).nscale8(scale8(b, b));
     }
 }
@@ -480,6 +505,8 @@ static void loadSettings() {
   S.sharks = prefs.getBool("sharks", S.sharks);
   S.gamePong = prefs.getBool("gpong", S.gamePong);
   S.clockCard = prefs.getBool("card", S.clockCard);
+  S.autoCycle = prefs.getBool("auto", S.autoCycle);
+  S.cycleMins = constrain(prefs.getUChar("cyc", S.cycleMins), 1, 15);
   S.maxMilliamps = constrain(prefs.getUShort("ma", S.maxMilliamps), 200, 20000);
   S.staSsid = prefs.getString("ssid", "");
   S.staPass = prefs.getString("pass", "");
@@ -504,6 +531,8 @@ static void saveSettings() {
   prefs.putBool("sharks", S.sharks);
   prefs.putBool("gpong", S.gamePong);
   prefs.putBool("card", S.clockCard);
+  prefs.putBool("auto", S.autoCycle);
+  prefs.putUChar("cyc", S.cycleMins);
   if (canvasDirty) { prefs.putBytes("canvas", canvas, sizeof(canvas)); canvasDirty = false; }
   prefs.end();
 }
@@ -537,6 +566,8 @@ static String stateJson() {
   j += ",\"sharks\":" + String(S.sharks ? "true" : "false");
   j += ",\"gamePong\":" + String(S.gamePong ? "true" : "false");
   j += ",\"clockCard\":" + String(S.clockCard ? "true" : "false");
+  j += ",\"autoCycle\":" + String(S.autoCycle ? "true" : "false");
+  j += ",\"cycleMins\":" + String(S.cycleMins);
   j += ",\"home\":" + ambientJson();
   j += ",\"game\":" + currentStatus();
   j += ",\"uptime\":" + String(millis() / 1000);
@@ -564,7 +595,10 @@ static void handleSet() {
   if (server.hasArg("mode")) {
     uint8_t m = server.arg("mode").toInt();
     if (m < M_COUNT && m != S.mode) { S.mode = m; fill_solid(frame, NUM_LEDS, CRGB::Black); }
+    if (!server.hasArg("autoCycle")) S.autoCycle = false;   // picking an effect by hand stops the rotation
   }
+  if (server.hasArg("autoCycle")) S.autoCycle = argBool("autoCycle");
+  if (server.hasArg("cycleMins")) S.cycleMins = constrain(server.arg("cycleMins").toInt(), 1, 15);
   if (server.hasArg("brightness")) S.brightness = constrain(server.arg("brightness").toInt(), 0, 255);
   if (server.hasArg("speed")) S.speed = constrain(server.arg("speed").toInt(), 1, 100);
   if (server.hasArg("color")) {
@@ -772,6 +806,54 @@ static void pollSerial() {
   }
 }
 
+// ---- Idle auto-cycle --------------------------------------------------------
+// Between quarter-hour cards, rotate through every animation (shuffled, no
+// repeats until all have played) in the chosen palette, with a quick fade.
+// A new one starts right after each card. Not saved to flash: only the
+// rotation setting is, so it doesn't wear the flash every few minutes.
+static const uint8_t ROTATION[] = {
+  M_RAINBOW, M_PLASMA, M_FIRE, M_MATRIX, M_TWINKLE, M_LIFE, M_RIPPLE, M_LAVA, M_RADAR,
+  M_HYPNO, M_TUNNEL, M_STARS, M_METABALLS, M_KALEIDO, M_BOUNCE, M_PINWHEEL, M_RAIN,
+};
+constexpr uint8_t ROTATION_LEN = sizeof(ROTATION);
+static bool cardShowing = false;
+
+static uint8_t nextAutoMode() {
+  static uint8_t bag[ROTATION_LEN], left = 0;
+  if (!left) {
+    memcpy(bag, ROTATION, ROTATION_LEN);
+    for (int i = ROTATION_LEN - 1; i > 0; i--) { int j = random8(i + 1); uint8_t t = bag[i]; bag[i] = bag[j]; bag[j] = t; }
+    left = ROTATION_LEN;
+    if (bag[left - 1] == S.mode) { uint8_t t = bag[0]; bag[0] = bag[left - 1]; bag[left - 1] = t; }
+  }
+  return bag[--left];
+}
+
+// Advances the rotation; returns the brightness for the fade (255 = none).
+static uint8_t autoCycleStep(uint32_t now, bool pongTime) {
+  constexpr uint32_t FADE = 400;
+  static uint32_t nextSwitch = 0, fadeOutAt = 0, fadeInAt = 0;
+  static bool fadingOut = false, wasCard = false;
+  bool cardEnded = wasCard && !cardShowing;
+  wasCard = cardShowing;
+  if (!S.autoCycle || pongTime) { fadingOut = false; nextSwitch = 0; return 255; }
+
+  auto start = [&](uint32_t t) {
+    S.mode = nextAutoMode();
+    fill_solid(frame, NUM_LEDS, CRGB::Black);
+    fadingOut = false;
+    fadeInAt = t;
+    nextSwitch = t + S.cycleMins * 60000UL;
+  };
+  if (cardEnded || nextSwitch == 0) start(now);            // fresh after each card
+  else if (!fadingOut && (int32_t)(now - nextSwitch) >= 0) { fadingOut = true; fadeOutAt = now; }
+  if (fadingOut) {
+    if (now - fadeOutAt >= FADE) start(now);
+    else return 255 - (now - fadeOutAt) * 255 / FADE;
+  }
+  return now - fadeInAt < FADE ? (now - fadeInAt) * 255 / FADE : 255;
+}
+
 // ---- Main -------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
@@ -806,6 +888,7 @@ void loop() {
 
   // While the Sharks are playing, Shark pong runs (goal shows still interrupt it).
   bool pongTime = S.sharks && S.gamePong && gameLive;
+  uint8_t cycleLevel = autoCycleStep(now, pongTime);
   EFFECTS[pongTime ? M_PONG : S.mode]();
 
   // Scroll the notice (e.g. the new IP) twice over everything, then drop it.
@@ -814,7 +897,7 @@ void loop() {
   bool showing = renderShow(showBuf, now);
   if (showing) {
     out = showBuf;
-  } else if (renderCard(showBuf, now)) {   // the quarter-hour card
+  } else if ((cardShowing = renderCard(showBuf, now))) {   // the quarter-hour card
     out = showBuf;
   } else if (noticeText.length()) {
     int total = textWidth(noticeText, 1) + W;
@@ -828,6 +911,12 @@ void loop() {
     }
   }
 
+  if (out == frame && cycleLevel < 255) {    // fading between auto-cycled animations
+    static CRGB faded[NUM_LEDS];
+    memcpy(faded, frame, sizeof(faded));
+    nscale8(faded, NUM_LEDS, cycleLevel);
+    out = faded;
+  }
   memcpy(shown, out, sizeof(shown));
   for (uint8_t y = 0; y < H; y++)
     for (uint8_t x = 0; x < W; x++) leds[XY(x, y)] = out[y * W + x];

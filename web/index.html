@@ -68,7 +68,9 @@ details summary{cursor:pointer;font-weight:600}
 <section>
   <h2>Quarter-hour card</h2>
   <p class="hint" id="homeInfo" style="margin:0 0 8px"></p>
-  <div class="checks" style="margin:10px 0"><label><input type="checkbox" id="clockCard"> Show on :00 :15 :30 :45</label></div>
+  <div class="checks" style="margin:10px 0"><label><input type="checkbox" id="clockCard"> Show on :00 :15 :30 :45</label><label><input type="checkbox" id="autoCycle"> Cycle animations between</label></div>
+  <label class="row"><span>Change every</span><select id="cycleMins"><option value="1">1 minute</option><option value="2">2 minutes</option><option value="3">3 minutes</option><option value="5">5 minutes</option></select></label>
+  <p class="hint">Cycles every animation except Shark pong, Solid, Text, Draw and Layout test, in the palette above. Picking an effect by hand turns cycling off.</p>
   <div class="tools"><button id="cardTest">Show it now</button></div>
 </section>
 
@@ -163,7 +165,8 @@ function apply(s, fromServer) {
   put('text', s.text);
   put('textSize', s.textSize);
   put('maxMilliamps', s.maxMilliamps);
-  for (const k of ['serpentine', 'columns', 'flipX', 'flipY', 'sharks', 'gamePong', 'clockCard']) $(k).checked = s[k];
+  put('cycleMins', s.cycleMins);
+  for (const k of ['serpentine', 'columns', 'flipX', 'flipY', 'sharks', 'gamePong', 'clockCard', 'autoCycle']) $(k).checked = s[k];
   $('game').textContent = gameText(s.game || {});
   const h = s.home || {};
   $('homeInfo').textContent = 'Date, time, weather, then the sun or moon. Home: ' + (h.city || '?') + (h.temp !== undefined ? ` · ${h.temp}°F now` : '');
@@ -201,6 +204,8 @@ document.querySelectorAll('[data-test]').forEach(b =>
 $('sharks').addEventListener('change', e => set({sharks: e.target.checked ? 1 : 0}));
 $('gamePong').addEventListener('change', e => set({gamePong: e.target.checked ? 1 : 0}));
 $('clockCard').addEventListener('change', e => set({clockCard: e.target.checked ? 1 : 0}));
+$('autoCycle').addEventListener('change', e => set({autoCycle: e.target.checked ? 1 : 0}));
+$('cycleMins').addEventListener('change', e => set({cycleMins: e.target.value}));
 $('cardTest').onclick = () => fetch('/api/card/test', {method: 'POST'});
 setInterval(async () => {
   if (document.visibilityState !== 'visible') return;
