@@ -6,7 +6,7 @@
 // whatever effect is running:
 //   Sharks goal   teal/white strobe, rings, a fin swimming, "GOAL!", the score
 //   goal against  the shark swims in and X-rays into a skeleton, "UGH.", the score
-//   final         a win: a fin, JAWS chomping, fireworks, "SHARKS WIN!"; or the shark beached at sunset, "FINAL"
+//   final         a win: a fin, JAWS chomping, fireworks, "SHARKS WIN!"; or the shark goes belly-up and a tombstone reads RIP, "FINAL"
 #pragma once
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -306,7 +306,7 @@ static bool goalShow(CRGB *buf, uint32_t t, const String &words) {
   return scrollOnce(buf, scoreLine(show), t, scoreT0, 1, 55, CRGB::White);
 }
 
-// ---- Sad shows: the shark turns to bones, or washes up -------------------------
+// ---- Sad shows: the shark turns to bones, or goes belly-up -------------------------
 // 14x7, facing right. '#' body, 'w' belly, 'o' eye.
 static const char *SHARK[7] = {
   "........#.....",
@@ -407,44 +407,59 @@ static bool skeletonShow(CRGB *buf, uint32_t t, const String &words) {
   return scrollOnce(buf, scoreLine(show), t, scoreT0, 1, 65, CRGB(70, 70, 110));
 }
 
-// Loss: the tide goes out and strands the shark on the beach at sunset. It
-// flops, then lies belly-up with a red eye as the sun sets into the sea.
-// Rows: sky 0-6, sea 7-9, sand 10-15, so the sun never sits behind the shark.
-static bool beachedShow(CRGB *buf, uint32_t t, const String &words) {
+// Loss, kept simple: the shark rolls belly-up and floats away, then a
+// tombstone reading RIP rises out of the ground.
+static const char *RIP3x5[3] = {"110101110101101", "111010010010111", "110101110100100"};   // R, I, P
+
+static void tombstone(CRGB *buf, int rise, uint8_t level) {
+  static const uint8_t STARS[][2] = {{3, 1}, {13, 0}, {0, 9}, {15, 6}, {1, 0}};
+  fill_solid(buf, NUM_LEDS, CRGB(4, 4, 18));
+  for (auto &st : STARS) buf[st[1] * W + st[0]] = CRGB(90, 90, 110);
+  int dy = 14 - rise;                                 // rise 0..14 lifts it out of the ground
+  for (int y = 0; y < 14; y++)
+    for (int x = 0; x < W; x++) {
+      int sy = y - dy;                                // row within the stone
+      bool stone = (sy == 1 && x >= 4 && x <= 11) || (sy == 2 && x >= 2 && x <= 13) || (sy >= 3 && x >= 1 && x <= 14);
+      if (stone) buf[y * W + x] = CRGB(115, 115, 125);
+    }
+  for (int n = 0; n < 3; n++)
+    for (int i = 0; i < 15; i++) {
+      int y = 4 + i / 3 + dy, x = 3 + n * 4 + i % 3;
+      if (RIP3x5[n][i] == '1' && y >= 0 && y < 14) buf[y * W + x] = CRGB(25, 25, 35);
+    }
+  for (int y = 14; y < H; y++)
+    for (int x = 0; x < W; x++) buf[y * W + x] = (x + y) % 3 ? CRGB(20, 45, 15) : CRGB(30, 60, 20);
+  nscale8(buf, NUM_LEDS, level);
+}
+
+static bool lossShow(CRGB *buf, uint32_t t, const String &words) {
+  const CRGB SEA(0, 15, 45);
+  const int restX = 1, restY = 4;
+  if (t < 4000) {
+    fill_solid(buf, NUM_LEDS, SEA);
+    if (t < 1500) {                                   // swims in
+      drawShark(buf, -SHARK_W + (int)t * (restX + SHARK_W) / 1500, restY, false, false);
+    } else if (t < 2400) {                            // rolls: over, back, over for good
+      bool up = (t - 1500) / 300 != 1;
+      drawShark(buf, restX, restY, up, up);
+    } else {                                          // floats up and away, belly-up
+      uint32_t u = t - 2400;
+      drawShark(buf, restX, restY - (int)(u * (restY + SHARK_H) / 1600), true, true);
+    }
+    return true;
+  }
   if (t < 8000) {
-    uint8_t level = t < 6000 ? 255 : 255 - (t - 6000) * 200 / 2000;
-    for (int y = 0; y < H; y++)
-      for (int x = 0; x < W; x++)
-        buf[y * W + x] = y < 7 ? blend(CRGB(35, 0, 55), CRGB(170, 55, 0), y * 255 / 6)
-                       : y < 10 ? ((x * 5 + y * 3 + t / 150) % 9 ? CRGB(0, 25, 70) : CRGB(150, 70, 20))   // sea, sun glints
-                       : CRGB(110, 80, 30);
-    int sunY = 2 + (int)(t * 7 / 8000);               // sinks into the sea at row 7
-    for (int y = sunY - 2; y <= sunY + 2; y++)
-      for (int x = 10; x <= 14; x++)
-        if (y >= 0 && y < 7 && (x - 12) * (x - 12) + (y - sunY) * (y - sunY) <= 5) buf[y * W + x] = CRGB(255, 170, 30);
-    // The tide: water over the sand pulls back up the beach, foam on its edge.
-    int tideEdge = t < 2000 ? H - (int)t * (H - 10) / 2000 : 10;
-    for (int y = 10; y < tideEdge && y < H; y++)
-      for (int x = 0; x < W; x++)
-        buf[y * W + x] = y == tideEdge - 1 ? CRGB(190, 210, 230) : CRGB(0, 50, 120);
-    int sx = 1, sy = 8;
-    bool bellyUp = false, dead = false;
-    if (t < 2000) sx = -SHARK_W + (int)t * (SHARK_W + 1) / 2000;
-    else if (t < 4600) {                              // three desperate flops
-      uint32_t f = (t - 2000) % 866;
-      int hop = sin8(f * 128 / 866) - 128;
-      sy = 8 - max(0, hop) / 32;
-      bellyUp = ((t - 2000) / 433) % 2;
-    } else { bellyUp = true; dead = true; }
-    drawShark(buf, sx, sy, bellyUp, dead);
-    nscale8(buf, NUM_LEDS, level);
+    uint32_t u = t - 4000;
+    int rise = u < 1200 ? (int)(u * 14 / 1200) : 14;
+    uint8_t level = u < 3000 ? 255 : 255 - (u - 3000) * 180 / 1000;
+    tombstone(buf, rise, level);
     return true;
   }
   fill_solid(buf, NUM_LEDS, CRGB::Black);
   uint32_t textT0 = 8000;
   uint32_t scoreT0 = textT0 + (textWidth(words, 2) + W) * 60;
-  if (t < scoreT0) return scrollOnce(buf, words, t, textT0, 2, 60, CRGB(150, 55, 10));
-  return scrollOnce(buf, scoreLine(show), t, scoreT0, 1, 65, CRGB(90, 60, 40));
+  if (t < scoreT0) return scrollOnce(buf, words, t, textT0, 2, 60, CRGB(110, 110, 125));
+  return scrollOnce(buf, scoreLine(show), t, scoreT0, 1, 65, CRGB(80, 80, 95));
 }
 
 // ---- The win: fin, JAWS, fireworks ------------------------------------------
@@ -564,7 +579,7 @@ static bool renderShow(CRGB *buf, uint32_t now) {
     case SHOW_GOAL:    playing = goalShow(buf, t, "GOAL!"); break;
     case SHOW_WIN:     playing = winShow(buf, t); break;
     case SHOW_AGAINST: playing = skeletonShow(buf, t, "UGH."); break;
-    default:           playing = beachedShow(buf, t, "FINAL"); break;
+    default:           playing = lossShow(buf, t, "FINAL"); break;
   }
   if (!playing) show.kind = SHOW_NONE;
   return playing;
