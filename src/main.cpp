@@ -36,12 +36,12 @@ constexpr uint32_t STA_TIMEOUT_MS = 20000;   // give up on home Wi-Fi after this
 enum Mode : uint8_t {
   M_SOLID, M_RAINBOW, M_PLASMA, M_FIRE, M_MATRIX, M_TWINKLE, M_LIFE,
   M_RIPPLE, M_LAVA, M_RADAR, M_HYPNO, M_TUNNEL, M_STARS, M_METABALLS,
-  M_KALEIDO, M_BOUNCE, M_PINWHEEL, M_RAIN, M_TEXT, M_DRAW, M_LAYOUT, M_COUNT
+  M_KALEIDO, M_BOUNCE, M_PINWHEEL, M_RAIN, M_PONG, M_TEXT, M_DRAW, M_LAYOUT, M_COUNT
 };
 static const char *MODE_NAMES[M_COUNT] = {
   "Solid", "Rainbow", "Plasma", "Fire", "Matrix", "Twinkle", "Life",
   "Ripple", "Lava lamp", "Radar", "Hypnosis", "Tunnel", "Starfield", "Metaballs",
-  "Kaleidoscope", "Bounce", "Pinwheel", "Raindrops", "Text", "Draw", "Layout test"
+  "Kaleidoscope", "Bounce", "Pinwheel", "Raindrops", "Shark pong", "Text", "Draw", "Layout test"
 };
 
 static const char *PALETTE_NAMES[] = {"Rainbow", "Party", "Lava", "Ocean", "Forest", "Heat", "Cloud"};
@@ -72,6 +72,8 @@ struct Settings {
   bool columns = false;           // wiring runs down columns instead of along rows
   bool flipX = false;
   bool flipY = false;
+  bool sharks = true;             // goal alerts
+  bool gamePong = true;           // Shark pong takes over while a game is live
   uint16_t maxMilliamps = 500;     // safe on USB power; raise in Setup with a real supply
   String staSsid;
   String staPass;
@@ -81,6 +83,7 @@ Preferences prefs;
 CRGB leds[NUM_LEDS];
 CRGB frame[NUM_LEDS];    // what the effects draw, logical order
 CRGB canvas[NUM_LEDS];   // the Draw mode picture, logical order
+CRGB shown[NUM_LEDS];    // what the panel is showing right now, for the live preview
 WebServer server(80);
 
 uint32_t vt = 0;               // "virtual" time in ms, scaled by the speed slider
@@ -451,11 +454,13 @@ static void fxLayout() {
   frame[i] = CRGB::Yellow;
 }
 
+#include "sharks.h"
+
 typedef void (*Effect)();
 static const Effect EFFECTS[M_COUNT] = {
   fxSolid, fxRainbow, fxPlasma, fxFire, fxMatrix, fxTwinkle, fxLife,
   fxRipple, fxLava, fxRadar, fxHypno, fxTunnel, fxStars, fxMetaballs,
-  fxKaleido, fxBounce, fxPinwheel, fxRain, fxText, fxDraw, fxLayout
+  fxKaleido, fxBounce, fxPinwheel, fxRain, fxPong, fxText, fxDraw, fxLayout
 };
 
 // ---- Persistence ------------------------------------------------------------
@@ -472,6 +477,8 @@ static void loadSettings() {
   S.columns = prefs.getBool("cols", S.columns);
   S.flipX = prefs.getBool("fx", S.flipX);
   S.flipY = prefs.getBool("fy", S.flipY);
+  S.sharks = prefs.getBool("sharks", S.sharks);
+  S.gamePong = prefs.getBool("gpong", S.gamePong);
   S.maxMilliamps = constrain(prefs.getUShort("ma", S.maxMilliamps), 200, 20000);
   S.staSsid = prefs.getString("ssid", "");
   S.staPass = prefs.getString("pass", "");
@@ -493,6 +500,8 @@ static void saveSettings() {
   prefs.putBool("fx", S.flipX);
   prefs.putBool("fy", S.flipY);
   prefs.putUShort("ma", S.maxMilliamps);
+  prefs.putBool("sharks", S.sharks);
+  prefs.putBool("gpong", S.gamePong);
   if (canvasDirty) { prefs.putBytes("canvas", canvas, sizeof(canvas)); canvasDirty = false; }
   prefs.end();
 }
@@ -523,6 +532,9 @@ static String stateJson() {
   j += ",\"flipX\":" + String(S.flipX ? "true" : "false");
   j += ",\"flipY\":" + String(S.flipY ? "true" : "false");
   j += ",\"maxMilliamps\":" + String(S.maxMilliamps);
+  j += ",\"sharks\":" + String(S.sharks ? "true" : "false");
+  j += ",\"gamePong\":" + String(S.gamePong ? "true" : "false");
+  j += ",\"game\":" + currentStatus();
   j += ",\"modes\":[";
   for (int i = 0; i < M_COUNT; i++) j += String(i ? "," : "") + "\"" + MODE_NAMES[i] + "\"";
   j += "],\"palettes\":[";
@@ -563,6 +575,8 @@ static void handleSet() {
   if (server.hasArg("columns")) S.columns = argBool("columns");
   if (server.hasArg("flipX")) S.flipX = argBool("flipX");
   if (server.hasArg("flipY")) S.flipY = argBool("flipY");
+  if (server.hasArg("sharks")) S.sharks = argBool("sharks");
+  if (server.hasArg("gamePong")) S.gamePong = argBool("gamePong");
   if (server.hasArg("maxMilliamps")) {
     S.maxMilliamps = constrain(server.arg("maxMilliamps").toInt(), 200, 20000);
     FastLED.setMaxPowerInVoltsAndMilliamps(5, S.maxMilliamps);
@@ -614,10 +628,16 @@ static void setupWeb() {
   server.on("/", HTTP_GET, [] { server.send_P(200, "text/html", INDEX_HTML); });
   server.on("/api/state", HTTP_GET, [] { server.send(200, "application/json", stateJson()); });
   server.on("/api/set", HTTP_POST, handleSet);
-  server.on("/api/frame", HTTP_GET, [] { server.send(200, "text/plain", toHex(frame)); });
+  server.on("/api/frame", HTTP_GET, [] { server.send(200, "text/plain", toHex(shown)); });
   server.on("/api/canvas", HTTP_GET, [] { server.send(200, "text/plain", toHex(canvas)); });
   server.on("/api/canvas", HTTP_POST, handleCanvasPost);
   server.on("/api/wifi", HTTP_POST, handleWifi);
+  server.on("/api/sharks/test", HTTP_POST, [] {
+    String k = server.arg("kind");
+    ShowKind kind = k == "against" ? SHOW_AGAINST : k == "win" ? SHOW_WIN : k == "loss" ? SHOW_LOSS : SHOW_GOAL;
+    pushEvent(kind, kind == SHOW_AGAINST || kind == SHOW_LOSS ? 1 : 3, 2, "STL");
+    server.send(204);
+  });
   server.onNotFound([] { server.sendHeader("Location", "/"); server.send(302); });
   server.begin();
 }
@@ -723,6 +743,7 @@ void setup() {
   setupWifi();
   setupWeb();
   setupOta();
+  setupSharks();
 }
 
 void loop() {
@@ -737,12 +758,17 @@ void loop() {
   vt += (now - lastFrame) * S.speed / 50;
   lastFrame = now;
 
-  EFFECTS[S.mode]();
+  // While the Sharks are playing, Shark pong runs (goal shows still interrupt it).
+  bool pongTime = S.sharks && S.gamePong && gameLive;
+  EFFECTS[pongTime ? M_PONG : S.mode]();
 
   // Scroll the notice (e.g. the new IP) twice over everything, then drop it.
   const CRGB *out = frame;
-  static CRGB noticeBuf[NUM_LEDS];
-  if (noticeText.length()) {
+  static CRGB noticeBuf[NUM_LEDS], showBuf[NUM_LEDS];
+  bool showing = renderShow(showBuf, now);
+  if (showing) {
+    out = showBuf;
+  } else if (noticeText.length()) {
     int total = textWidth(noticeText, 1) + W;
     int offset = (now - noticeStart) / 60;
     if (offset >= total * 2) {
@@ -754,9 +780,10 @@ void loop() {
     }
   }
 
+  memcpy(shown, out, sizeof(shown));
   for (uint8_t y = 0; y < H; y++)
     for (uint8_t x = 0; x < W; x++) leds[XY(x, y)] = out[y * W + x];
-  FastLED.setBrightness(S.brightness);
+  FastLED.setBrightness(showing ? max<uint8_t>(S.brightness, 140) : S.brightness);   // power limit still applies
   FastLED.show();
 
   if (saveAt && (int32_t)(millis() - saveAt) >= 0) { saveAt = 0; saveSettings(); }

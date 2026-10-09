@@ -37,6 +37,7 @@ details summary{cursor:pointer;font-weight:600}
 .checks{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}
 .checks label{display:flex;gap:8px;align-items:center}
 .hidden{display:none}
+.game{margin:0;font-size:17px;font-variant-numeric:tabular-nums}
 </style></head><body><main>
 <header>
   <h1>LED Grid</h1>
@@ -54,6 +55,18 @@ details summary{cursor:pointer;font-weight:600}
   <div id="textOpts" class="hidden">
     <label class="row"><span>Text</span><input type="text" id="text" maxlength="120" autocomplete="off"></label>
     <label class="row"><span>Size</span><select id="textSize"><option value="1">Small (7 px)</option><option value="2">Large (14 px)</option></select></label>
+  </div>
+</section>
+
+<section>
+  <h2>Sharks goal alerts</h2>
+  <p id="game" class="game">…</p>
+  <div class="checks" style="margin:10px 0"><label><input type="checkbox" id="sharks"> Alerts on</label><label><input type="checkbox" id="gamePong"> Shark pong during games</label></div>
+  <div class="tools">
+    <button data-test="goal">Test goal</button>
+    <button data-test="against">Test against</button>
+    <button data-test="win">Test win</button>
+    <button data-test="loss">Test loss</button>
   </div>
 </section>
 
@@ -148,7 +161,8 @@ function apply(s, fromServer) {
   put('text', s.text);
   put('textSize', s.textSize);
   put('maxMilliamps', s.maxMilliamps);
-  for (const k of ['serpentine', 'columns', 'flipX', 'flipY']) $(k).checked = s[k];
+  for (const k of ['serpentine', 'columns', 'flipX', 'flipY', 'sharks', 'gamePong']) $(k).checked = s[k];
+  $('game').textContent = gameText(s.game || {});
   const name = s.modes[s.mode];
   $('textOpts').classList.toggle('hidden', name !== 'Text');
   const drawing = name === 'Draw';
@@ -162,6 +176,30 @@ function apply(s, fromServer) {
   if (document.activeElement !== $('ssid')) $('ssid').value = w.ssid;
   online(true);
 }
+
+function gameText(g) {
+  const vs = g.home ? `vs ${g.opp}` : `at ${g.opp}`;
+  switch (g.state) {
+    case 'live': return `SJS ${g.us} – ${g.them} ${g.opp} · ${g.period}${g.clock ? ' ' + g.clock : ''}`;
+    case 'final': return `Final: SJS ${g.us} – ${g.them} ${g.opp}`;
+    case 'next': {
+      const d = new Date(g.start);
+      return `Next: ${vs}, ${d.toLocaleDateString([], {weekday: 'short', month: 'short', day: 'numeric'})} ${d.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}`;
+    }
+    case 'off': return 'Alerts are off.';
+    case 'offline': return 'Needs home Wi-Fi to follow games.';
+    case 'none': return 'No Sharks games this week.';
+    default: return 'Checking the schedule…';
+  }
+}
+document.querySelectorAll('[data-test]').forEach(b =>
+  b.onclick = () => fetch('/api/sharks/test', {method: 'POST', body: new URLSearchParams({kind: b.dataset.test})}));
+$('sharks').addEventListener('change', e => set({sharks: e.target.checked ? 1 : 0}));
+$('gamePong').addEventListener('change', e => set({gamePong: e.target.checked ? 1 : 0}));
+setInterval(async () => {
+  if (document.visibilityState !== 'visible') return;
+  try { const s = await (await fetch('/api/state')).json(); $('game').textContent = gameText(s.game || {}); } catch (e) {}
+}, 10000);
 
 // Sliders: send while dragging, throttled.
 for (const id of ['brightness', 'speed']) {
