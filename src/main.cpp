@@ -1,4 +1,5 @@
-// LED Grid: 16x16 WS2812B panel on an ESP32, controlled from a browser.
+// LED Grid: 16x16 WS2812B panels on an ESP32, controlled from a browser. One
+// panel by default; build with -D GRID_W=32 for two panels chained side by side.
 //
 // Wi-Fi: the board always runs its own network (AP_SSID below) at
 // http://192.168.4.1. Save your home Wi-Fi from the page's Setup panel and it
@@ -14,15 +15,25 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <ArduinoOTA.h>
+#include <DNSServer.h>
+#include <algorithm>
+#include <vector>
 
 #include "font5x7.h"
 #include "webpage.h"
 
 // ---- Hardware ---------------------------------------------------------------
 #define DATA_PIN 13        // the pin labelled D13
-constexpr uint8_t W = 16;
+#ifndef GRID_W
+#define GRID_W 16          // 32 = two panels chained side by side (env:wide)
+#endif
+constexpr uint8_t PANEL = 16;      // each physical panel is 16x16
+constexpr uint8_t W = GRID_W;
 constexpr uint8_t H = 16;
 constexpr uint16_t NUM_LEDS = W * H;
+constexpr uint8_t PANELS = W / PANEL;
+constexpr float CX = (W - 1) / 2.0f, CY = (H - 1) / 2.0f;   // centre, in pixels
+constexpr int OX = (W - PANEL) / 2;   // shifts a 16-wide picture to the middle
 
 // ---- Network ----------------------------------------------------------------
 static const char *AP_SSID = "LED-Grid";
@@ -34,13 +45,20 @@ constexpr uint32_t STA_TIMEOUT_MS = 20000;   // give up on home Wi-Fi after this
 enum Mode : uint8_t {
   M_SOLID, M_RAINBOW, M_PLASMA, M_FIRE, M_MATRIX, M_TWINKLE, M_LIFE,
   M_RIPPLE, M_LAVA, M_RADAR, M_HYPNO, M_TUNNEL, M_STARS, M_METABALLS,
-  M_KALEIDO, M_BOUNCE, M_PINWHEEL, M_RAIN, M_PONG, M_COURT, M_TEXT, M_DRAW, M_LAYOUT, M_COUNT
+  M_KALEIDO, M_BOUNCE, M_PINWHEEL, M_RAIN, M_PONG, M_COURT, M_TEXT, M_DRAW, M_LAYOUT, M_FLIGHTS, M_COUNT
 };
 static const char *MODE_NAMES[M_COUNT] = {
   "Solid", "Rainbow", "Plasma", "Fire", "Matrix", "Twinkle", "Life",
   "Ripple", "Lava lamp", "Radar", "Hypnosis", "Tunnel", "Starfield", "Metaballs",
-  "Kaleidoscope", "Bounce", "Pinwheel", "Raindrops", "Shark pong", "Knicks court", "Text", "Draw", "Layout test"
+  "Kaleidoscope", "Bounce", "Pinwheel", "Raindrops", "Pong", "Scoreboard", "Text", "Draw", "Layout test", "Flights"
 };
+
+// The animations the idle auto-cycle picks from (the page can leave some out).
+static const uint8_t ROTATION[] = {
+  M_RAINBOW, M_PLASMA, M_FIRE, M_MATRIX, M_TWINKLE, M_LIFE, M_RIPPLE, M_LAVA, M_RADAR,
+  M_HYPNO, M_TUNNEL, M_STARS, M_METABALLS, M_KALEIDO, M_BOUNCE, M_PINWHEEL, M_RAIN,
+};
+constexpr uint8_t ROTATION_LEN = sizeof(ROTATION);
 
 static const char *PALETTE_NAMES[] = {"Rainbow", "Party", "Lava", "Ocean", "Forest", "Heat", "Cloud", "Halloween"};
 constexpr uint8_t PAL_HALLOWEEN = 7;
@@ -89,12 +107,17 @@ struct Settings {
   bool columns = false;           // wiring runs down columns instead of along rows
   bool flipX = false;
   bool flipY = false;
-  bool sharks = true;             // goal alerts
-  bool knicks = true;             // Knicks basket/run/lead/result alerts
-  bool gamePong = true;           // Shark pong takes over while a game is live
+  bool swapPanels = false;        // two panels: the data wire enters the right-hand one
+  // Teams followed, as "league:espnId:abbr:color1:color2" ("" = none). The
+  // defaults are the Sharks and Knicks, which this grid was built for.
+  String team[2] = {"nhl:18:SJ:00a0af:ea5a00", "nba:18:NY:0055c8:f56e14"};
+  bool gamePong = true;           // the game screen (pong / scoreboard) takes over while a game is live
   bool clockCard = true;          // date/time/weather/sky card on the quarter hour
   bool autoCycle = true;          // rotate through the animations between cards
   uint8_t cycleMins = 3;          // minutes per animation
+  uint32_t cycleMask = 0xFFFFFFFF;   // which ROTATION entries play (bit i = ROTATION[i])
+  float lat = 39.63f, lon = -119.66f;   // weather and flights: Sparks, NV by default, rounded
+  String city = "Sparks";
   uint16_t maxMilliamps = 500;     // safe on USB power; raise in Setup with a real supply
   String staSsid;
   String staPass;
@@ -121,14 +144,19 @@ uint32_t staStarted = 0;
 // ---- Helpers ----------------------------------------------------------------
 static inline CRGB &px(int x, int y) { return frame[y * W + x]; }
 
+// Panels are chained left to right (or right to left with swapPanels); the
+// wiring settings apply within each panel, since they're identical panels.
 static uint16_t XY(uint8_t x, uint8_t y) {
-  if (S.flipX) x = W - 1 - x;
+  uint8_t panel = x / PANEL;
+  if (S.swapPanels) panel = PANELS - 1 - panel;
+  x %= PANEL;
+  if (S.flipX) x = PANEL - 1 - x;
   if (S.flipY) y = H - 1 - y;
   uint8_t line = S.columns ? x : y;       // which wired row/column
   uint8_t along = S.columns ? y : x;      // position along it
-  uint8_t len = S.columns ? H : W;
+  uint8_t len = S.columns ? H : PANEL;
   if (S.serpentine && (line & 1)) along = len - 1 - along;
-  return line * len + along;
+  return panel * PANEL * H + line * len + along;
 }
 
 static CRGB colorOf(uint32_t rgb) { return CRGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF); }
@@ -178,7 +206,7 @@ static void fxPlasma() {
   uint16_t t = vt / 6;
   for (int y = 0; y < H; y++)
     for (int x = 0; x < W; x++) {
-      int dx = x * 2 - 15, dy = y * 2 - 15;
+      int dx = x * 2 - (W - 1), dy = y * 2 - (H - 1);
       uint8_t dist = sqrt16(dx * dx + dy * dy) * 8;
       uint8_t v = (sin8(x * 18 + t) + sin8(y * 14 - t / 2) +
                    sin8((x + y) * 10 + t / 3) + sin8(dist - t)) / 4;
@@ -232,7 +260,7 @@ static void fxTwinkle() {
   if (!every(last, 20)) return;
   CRGBPalette16 pal = paletteFor(S.palette);
   for (int i = 0; i < NUM_LEDS; i++) frame[i].fadeToBlackBy(12);
-  for (int n = 0; n < 2; n++)
+  for (int n = 0; n < 2 * PANELS; n++)
     if (random8() < 160) frame[random16(NUM_LEDS)] = ColorFromPalette(pal, random8());
 }
 
@@ -283,8 +311,8 @@ static void fxLife() {
 
 static void fxRipple() {
   CRGBPalette16 pal = paletteFor(S.palette);
-  int cx = 15 + (sin8(vt / 40) - 128) / 12;     // centre drifts around, in half-pixels
-  int cy = 15 + (cos8(vt / 53) - 128) / 12;
+  int cx = (W - 1) + (sin8(vt / 40) - 128) * PANELS / 12;   // centre drifts around, in half-pixels
+  int cy = (H - 1) + (cos8(vt / 53) - 128) / 12;
   for (int y = 0; y < H; y++)
     for (int x = 0; x < W; x++) {
       int dx = x * 2 - cx, dy = y * 2 - cy;
@@ -306,7 +334,7 @@ static void fxRadar() {
   uint8_t sweep = vt / 8;
   for (int y = 0; y < H; y++)
     for (int x = 0; x < W; x++) {
-      float a = atan2f(y - 7.5f, x - 7.5f);                 // -pi..pi
+      float a = atan2f(y - CY, x - CX);                     // -pi..pi
       uint8_t angle = (uint8_t)((a + PI) * (128.0f / PI));
       uint8_t behind = sweep - angle;                       // wraps, by design
       uint8_t b = behind < 160 ? 255 - behind * 255 / 160 : 0;
@@ -322,7 +350,7 @@ static uint8_t ANG[NUM_LEDS], DIST[NUM_LEDS];
 static void initPolar() {
   for (int y = 0; y < H; y++)
     for (int x = 0; x < W; x++) {
-      float dx = x - 7.5f, dy = y - 7.5f;
+      float dx = x - CX, dy = y - CY;
       ANG[y * W + x] = (uint8_t)((atan2f(dy, dx) + PI) * (128.0f / PI));
       DIST[y * W + x] = (uint8_t)min(255.0f, sqrtf(dx * dx + dy * dy) * 16);
     }
@@ -344,26 +372,27 @@ static void fxTunnel() {
   CRGBPalette16 pal = paletteFor(S.palette);
   for (int y = 0; y < H; y++)
     for (int x = 0; x < W; x++) {
-      uint8_t d = max(abs(x * 2 - 15), abs(y * 2 - 15));     // 1..15, square rings
+      // 1..15, square rings (rectangles, stretched to fill a wide screen)
+      uint8_t d = max(abs(x * 2 - (W - 1)) / PANELS, abs(y * 2 - (H - 1)));
       uint8_t band = sin8(d * 24 - vt / 3);
       px(x, y) = ColorFromPalette(pal, d * 8 - vt / 12, scale8(band, band));
     }
 }
 
 static void fxStars() {
-  constexpr int N = 24;
+  constexpr int N = 24 * PANELS;
   static float r[N], a[N], v[N];
   static uint8_t hue[N];
   static bool init = false;
   static uint32_t last = 0;
   auto respawn = [](int i) { r[i] = random8(5) / 4.0f; a[i] = random16() / 65536.0f * TWO_PI; v[i] = 0.04f + random8() / 1500.0f; hue[i] = random8(); };
-  if (!init) { for (int i = 0; i < N; i++) { respawn(i); r[i] = random8(110) / 10.0f; } init = true; }
+  if (!init) { for (int i = 0; i < N; i++) { respawn(i); r[i] = random8(110 * PANELS) / 10.0f; } init = true; }
   if (!every(last, 16)) return;
   for (int i = 0; i < NUM_LEDS; i++) frame[i].fadeToBlackBy(60);
   CRGBPalette16 pal = paletteFor(S.palette);
   for (int i = 0; i < N; i++) {
     r[i] += v[i] * (1 + r[i] * 0.35f);          // faster as they near the edge
-    int x = lroundf(7.5f + cosf(a[i]) * r[i]), y = lroundf(7.5f + sinf(a[i]) * r[i]);
+    int x = lroundf(CX + cosf(a[i]) * r[i]), y = lroundf(CY + sinf(a[i]) * r[i]);
     if (x < 0 || x >= W || y < 0 || y >= H) { respawn(i); continue; }
     uint8_t b = min(255, (int)(r[i] * 40));
     px(x, y) += S.palette == 0 ? CRGB(b, b, b) : ColorFromPalette(pal, hue[i], b);
@@ -372,15 +401,16 @@ static void fxStars() {
 
 static void fxMetaballs() {
   CRGBPalette16 pal = S.palette == 0 ? CRGBPalette16(LavaColors_p) : paletteFor(S.palette);
-  float bx[3], by[3];
-  for (int k = 0; k < 3; k++) {
-    bx[k] = 7.5f + 6.5f * sinf(vt / (900.0f + k * 370) + k * 2.1f);
-    by[k] = 7.5f + 6.5f * cosf(vt / (1100.0f + k * 290) + k * 1.3f);
+  constexpr int B = 3 * PANELS;
+  float bx[B], by[B];
+  for (int k = 0; k < B; k++) {
+    bx[k] = CX + (CX - 1) * sinf(vt / (900.0f + k * 370) + k * 2.1f);
+    by[k] = CY + (CY - 1) * cosf(vt / (1100.0f + k * 290) + k * 1.3f);
   }
   for (int y = 0; y < H; y++)
     for (int x = 0; x < W; x++) {
       float sum = 0;
-      for (int k = 0; k < 3; k++) {
+      for (int k = 0; k < B; k++) {
         float dx = x - bx[k], dy = y - by[k];
         sum += 9.0f / (dx * dx + dy * dy + 1.0f);
       }
@@ -388,10 +418,20 @@ static void fxMetaballs() {
     }
 }
 
-// Noise in one eighth of the square, mirrored into all eight.
+// Noise in one eighth of the square, mirrored into all eight. On a wide
+// screen, one quarter mirrored into four.
 static void fxKaleido() {
   CRGBPalette16 pal = paletteFor(S.palette);
   uint32_t z = vt / 2;
+  if (W != H) {
+    for (int y = 0; y < H / 2; y++)
+      for (int x = 0; x < W / 2; x++) {
+        CRGB c = ColorFromPalette(pal, inoise8(x * 50, y * 50, z) + vt / 40);
+        px(W / 2 - 1 - x, H / 2 - 1 - y) = c; px(W / 2 + x, H / 2 - 1 - y) = c;
+        px(W / 2 - 1 - x, H / 2 + y) = c; px(W / 2 + x, H / 2 + y) = c;
+      }
+    return;
+  }
   for (int y = 0; y < H / 2; y++)
     for (int x = 0; x <= y; x++) {
       CRGB c = ColorFromPalette(pal, inoise8(x * 50, y * 50, z) + vt / 40);
@@ -405,12 +445,12 @@ static void fxKaleido() {
 }
 
 static void fxBounce() {
-  constexpr int N = 4;
+  constexpr int N = 4 * PANELS;
   static float x[N], y[N], vx[N], vy[N];
   static bool init = false;
   static uint32_t last = 0;
   if (!init) {
-    for (int i = 0; i < N; i++) { x[i] = random8(16); y[i] = random8(16); vx[i] = (random8(2) ? 1 : -1) * (0.15f + random8() / 1000.0f); vy[i] = (random8(2) ? 1 : -1) * (0.12f + random8() / 1000.0f); }
+    for (int i = 0; i < N; i++) { x[i] = random8(W); y[i] = random8(H); vx[i] = (random8(2) ? 1 : -1) * (0.15f + random8() / 1000.0f); vy[i] = (random8(2) ? 1 : -1) * (0.12f + random8() / 1000.0f); }
     init = true;
   }
   if (!every(last, 16)) return;
@@ -437,16 +477,18 @@ static void fxPinwheel() {
 
 // Rings spreading from random points, like drops on a pond.
 static void fxRain() {
-  constexpr int N = 4;
-  static float cx[N], cy[N], r[N] = {99, 99, 99, 99};
+  constexpr int N = 4 * PANELS;
+  static float cx[N], cy[N], r[N];
   static uint8_t hue[N];
   static uint32_t last = 0;
+  static bool init = false;
+  if (!init) { for (float &v : r) v = 99; init = true; }
   if (!every(last, 16)) return;
   for (int i = 0; i < NUM_LEDS; i++) frame[i].fadeToBlackBy(50);
   CRGBPalette16 pal = paletteFor(S.palette);
   for (int k = 0; k < N; k++) {
     r[k] += 0.18f;
-    if (r[k] > 12 && random8() < 6) { cx[k] = random8(16); cy[k] = random8(16); r[k] = 0; hue[k] = random8(); }
+    if (r[k] > 12 && random8() < 6) { cx[k] = random8(W); cy[k] = random8(H); r[k] = 0; hue[k] = random8(); }
     if (r[k] > 12) continue;
     uint8_t fade = 255 - (uint8_t)(r[k] * 20);
     for (int y = 0; y < H; y++)
@@ -479,15 +521,17 @@ static void fxLayout() {
   frame[i] = CRGB::Yellow;
 }
 
+#include "games.h"
 #include "sharks.h"
 #include "ambient.h"
 #include "knicks.h"
+#include "flights.h"
 
 typedef void (*Effect)();
 static const Effect EFFECTS[M_COUNT] = {
   fxSolid, fxRainbow, fxPlasma, fxFire, fxMatrix, fxTwinkle, fxLife,
   fxRipple, fxLava, fxRadar, fxHypno, fxTunnel, fxStars, fxMetaballs,
-  fxKaleido, fxBounce, fxPinwheel, fxRain, fxPong, fxCourt, fxText, fxDraw, fxLayout
+  fxKaleido, fxBounce, fxPinwheel, fxRain, fxPong, fxCourt, fxText, fxDraw, fxLayout, fxFlights
 };
 
 // ---- Persistence ------------------------------------------------------------
@@ -504,8 +548,16 @@ static void loadSettings() {
   S.columns = prefs.getBool("cols", S.columns);
   S.flipX = prefs.getBool("fx", S.flipX);
   S.flipY = prefs.getBool("fy", S.flipY);
-  S.sharks = prefs.getBool("sharks", S.sharks);
-  S.knicks = prefs.getBool("knicks", S.knicks);
+  S.swapPanels = prefs.getBool("swap", S.swapPanels);
+  S.team[0] = prefs.getString("t0", S.team[0]);
+  S.team[1] = prefs.getString("t1", S.team[1]);
+  // Grids from before team picking: alerts switched off meant no team.
+  if (!prefs.isKey("t0") && !prefs.getBool("sharks", true)) S.team[0] = "";
+  if (!prefs.isKey("t1") && !prefs.getBool("knicks", true)) S.team[1] = "";
+  S.cycleMask = prefs.getUInt("cmask", S.cycleMask);
+  S.lat = prefs.getFloat("lat", S.lat);
+  S.lon = prefs.getFloat("lon", S.lon);
+  S.city = prefs.getString("city", S.city);
   S.gamePong = prefs.getBool("gpong", S.gamePong);
   S.clockCard = prefs.getBool("card", S.clockCard);
   S.autoCycle = prefs.getBool("auto", S.autoCycle);
@@ -530,9 +582,14 @@ static void saveSettings() {
   prefs.putBool("cols", S.columns);
   prefs.putBool("fx", S.flipX);
   prefs.putBool("fy", S.flipY);
+  prefs.putBool("swap", S.swapPanels);
   prefs.putUShort("ma", S.maxMilliamps);
-  prefs.putBool("sharks", S.sharks);
-  prefs.putBool("knicks", S.knicks);
+  prefs.putString("t0", S.team[0]);
+  prefs.putString("t1", S.team[1]);
+  prefs.putUInt("cmask", S.cycleMask);
+  prefs.putFloat("lat", S.lat);
+  prefs.putFloat("lon", S.lon);
+  prefs.putString("city", S.city);
   prefs.putBool("gpong", S.gamePong);
   prefs.putBool("card", S.clockCard);
   prefs.putBool("auto", S.autoCycle);
@@ -555,7 +612,8 @@ static String stateJson() {
   char hex[8];
   snprintf(hex, sizeof(hex), "#%06X", (unsigned)S.color);
   String j = "{";
-  j += "\"mode\":" + String(S.mode);
+  j += "\"w\":" + String(W) + ",\"h\":" + String(H);
+  j += ",\"mode\":" + String(S.mode);
   j += ",\"brightness\":" + String(S.brightness);
   j += ",\"speed\":" + String(S.speed);
   j += ",\"color\":\"" + String(hex) + "\"";
@@ -566,16 +624,19 @@ static String stateJson() {
   j += ",\"columns\":" + String(S.columns ? "true" : "false");
   j += ",\"flipX\":" + String(S.flipX ? "true" : "false");
   j += ",\"flipY\":" + String(S.flipY ? "true" : "false");
+  j += ",\"swapPanels\":" + String(S.swapPanels ? "true" : "false");
   j += ",\"maxMilliamps\":" + String(S.maxMilliamps);
-  j += ",\"sharks\":" + String(S.sharks ? "true" : "false");
-  j += ",\"knicks\":" + String(S.knicks ? "true" : "false");
-  j += ",\"knicksGame\":" + currentKnicksStatus();
+  j += ",\"teams\":" + teamsJson();
   j += ",\"gamePong\":" + String(S.gamePong ? "true" : "false");
   j += ",\"clockCard\":" + String(S.clockCard ? "true" : "false");
   j += ",\"autoCycle\":" + String(S.autoCycle ? "true" : "false");
   j += ",\"cycleMins\":" + String(S.cycleMins);
+  j += ",\"cycleMask\":" + String(S.cycleMask);
+  j += ",\"rotation\":[";
+  for (int i = 0; i < ROTATION_LEN; i++) j += String(i ? "," : "") + ROTATION[i];
+  j += "]";
   j += ",\"home\":" + ambientJson();
-  j += ",\"game\":" + currentStatus();
+  j += ",\"flight\":" + flightsJson();
   j += ",\"uptime\":" + String(millis() / 1000);
   j += ",\"rssi\":" + String(WiFi.RSSI());
   j += ",\"heap\":" + String(ESP.getFreeHeap()) + ",\"minHeap\":" + String(ESP.getMinFreeHeap()) + ",\"maxBlock\":" + String(ESP.getMaxAllocHeap());
@@ -624,8 +685,24 @@ static void handleSet() {
   if (server.hasArg("columns")) S.columns = argBool("columns");
   if (server.hasArg("flipX")) S.flipX = argBool("flipX");
   if (server.hasArg("flipY")) S.flipY = argBool("flipY");
-  if (server.hasArg("sharks")) S.sharks = argBool("sharks");
-  if (server.hasArg("knicks")) S.knicks = argBool("knicks");
+  if (server.hasArg("swapPanels")) S.swapPanels = argBool("swapPanels");
+  if (server.hasArg("team0") || server.hasArg("team1")) {
+    for (int i = 0; i < 2; i++) {
+      String k = "team" + String(i);
+      if (!server.hasArg(k)) continue;
+      String v = server.arg(k);
+      S.team[i] = v.length() < 40 && (v.isEmpty() || parseTeam(v).league) ? v : String("");
+    }
+    setTeams(S.team);
+  }
+  if (server.hasArg("cycleMask")) S.cycleMask = strtoul(server.arg("cycleMask").c_str(), nullptr, 10);
+  if (server.hasArg("lat") && server.hasArg("lon")) {
+    // Rounded to ~1 km: plenty for weather and sunrise, and no street address.
+    S.lat = roundf(constrain(server.arg("lat").toFloat(), -90.0f, 90.0f) * 100) / 100;
+    S.lon = roundf(constrain(server.arg("lon").toFloat(), -180.0f, 180.0f) * 100) / 100;
+    S.city = server.arg("city").substring(0, 40);
+    setHome(S.lat, S.lon, S.city);
+  }
   if (server.hasArg("gamePong")) S.gamePong = argBool("gamePong");
   if (server.hasArg("clockCard")) S.clockCard = argBool("clockCard");
   if (server.hasArg("maxMilliamps")) {
@@ -647,7 +724,7 @@ static String toHex(const CRGB *buf) {
 
 static void handleCanvasPost() {
   const String &body = server.arg("plain");
-  if (body.length() != NUM_LEDS * 6) { server.send(400, "text/plain", "expected 1536 hex chars"); return; }
+  if (body.length() != NUM_LEDS * 6) { server.send(400, "text/plain", "expected " + String(NUM_LEDS * 6) + " hex chars"); return; }
   char b[3] = {0, 0, 0};
   for (int i = 0; i < NUM_LEDS; i++) {
     uint8_t ch[3];
@@ -675,6 +752,27 @@ static void handleWifi() {
   ESP.restart();
 }
 
+// Nearby networks for the Wi-Fi picker: strongest first, each name once.
+// Scanning takes 2-3 s; it runs on the web task, so the animation carries on.
+static void handleScan() {
+  int n = WiFi.scanNetworks();
+  std::vector<int> order;
+  for (int i = 0; i < n; i++) order.push_back(i);
+  std::sort(order.begin(), order.end(), [](int a, int b) { return WiFi.RSSI(a) > WiFi.RSSI(b); });
+  String j = "[";
+  std::vector<String> seen;
+  for (int i : order) {
+    String ssid = WiFi.SSID(i);
+    if (!ssid.length() || ssid == AP_SSID || std::find(seen.begin(), seen.end(), ssid) != seen.end()) continue;
+    seen.push_back(ssid);
+    j += String(seen.size() > 1 ? "," : "") + "{\"ssid\":\"" + jsonEscape(ssid) + "\",\"rssi\":" + WiFi.RSSI(i) +
+         ",\"open\":" + (WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "true" : "false") + "}";
+    if (seen.size() >= 20) break;
+  }
+  WiFi.scanDelete();
+  server.send(200, "application/json", j + "]");
+}
+
 static void setupWeb() {
   server.on("/", HTTP_GET, [] {
     server.sendHeader("Content-Encoding", "gzip");
@@ -686,24 +784,52 @@ static void setupWeb() {
   server.on("/api/canvas", HTTP_GET, [] { server.send(200, "text/plain", toHex(canvas)); });
   server.on("/api/canvas", HTTP_POST, handleCanvasPost);
   server.on("/api/wifi", HTTP_POST, handleWifi);
-  server.on("/api/knicks/test", HTTP_POST, [] {
-    static const char *NAMES[] = {"swish", "three", "opp", "run", "lead", "brick", "win", "loss"};
+  // Preview a team's shows: /api/test?slot=0&kind=goal|against|win|loss
+  // (basketball also: swish|three|opp|run|lead|brick).
+  server.on("/api/test", HTTP_POST, [] {
+    static const char *NAMES[] = {"", "goal", "against", "win", "loss", "swish", "three", "opp", "run", "lead", "brick"};
+    int slot = constrain(server.arg("slot").toInt(), 0, SLOTS - 1);
+    Team t = teamAt(slot);
+    if (!t.league) { server.send(400, "text/plain", "no team in that slot"); return; }
     String k = server.arg("kind");
-    ShowKind kind = K_SWISH;
-    for (int i = 0; i < 8; i++) if (k == NAMES[i]) kind = (ShowKind)(K_SWISH + i);
-    int extra = kind == K_RUN ? 10 : kind == K_BRICK ? 8 : kind == K_SWISH ? 2 : kind == K_THREE ? 3 : 0;
-    bool bad = kind == K_OPP || kind == K_BRICK || kind == K_LOSS;
-    pushEvent(kind, bad ? 98 : 104, bad ? 101 : 99, "MIN", extra);
+    ShowKind kind = SHOW_GOAL;
+    for (int i = 1; i <= K_BRICK; i++) if (k == NAMES[i]) kind = (ShowKind)i;
+    bool nba = t.league == L_NBA;
+    if (nba && kind == SHOW_GOAL) kind = K_SWISH;
+    if (nba && kind == SHOW_AGAINST) kind = K_OPP;
+    if (nba && kind == SHOW_WIN) kind = K_WIN;
+    if (nba && kind == SHOW_LOSS) kind = K_LOSS;
+    // Plausible numbers for each sport, and points for the kind of score.
+    static const int US[L_COUNT] = {0, 3, 104, 24, 5}, THEM[L_COUNT] = {0, 2, 99, 17, 3};   // NHL, NBA, NFL, MLB
+    int extra = t.league == L_NFL ? 6 : t.league == L_MLB ? 2 : 1;
+    if (server.hasArg("pts")) extra = server.arg("pts").toInt();
+    if (kind == K_RUN) extra = 10; else if (kind == K_BRICK) extra = 8; else if (kind == K_SWISH) extra = 2; else if (kind == K_THREE) extra = 3;
+    bool bad = kind == SHOW_AGAINST || kind == SHOW_LOSS || kind == K_OPP || kind == K_BRICK || kind == K_LOSS;
+    int us = US[t.league], them = THEM[t.league];
+    pushEvent(kind, slot, bad ? them : us, bad ? us : them, "OPP", extra);
+    server.send(204);
+  });
+  // A made-up flight passing overhead, on the Flights screen:
+  // /api/flight/test?callsign=UAL1234&route=SFO>DEN&type=AIRBUS A320 (Southwest by default).
+  server.on("/api/flight/test", HTTP_POST, [] {
+    S.mode = M_FLIGHTS;
+    S.autoCycle = false;
+    markDirty();
+    String cs = server.hasArg("callsign") ? server.arg("callsign") : "SWA3091";
+    cs.toUpperCase();
+    startFlightDemo(cs, server.hasArg("route") ? server.arg("route") : "LAS>RNO",
+                    server.hasArg("type") ? server.arg("type") : "BOEING 737-800");
     server.send(204);
   });
   server.on("/api/card/test", HTTP_POST, [] { triggerCard(strtoul(server.arg("at").c_str(), nullptr, 10)); server.send(204); });
-  server.on("/api/sharks/test", HTTP_POST, [] {
-    String k = server.arg("kind");
-    ShowKind kind = k == "against" ? SHOW_AGAINST : k == "win" ? SHOW_WIN : k == "loss" ? SHOW_LOSS : SHOW_GOAL;
-    pushEvent(kind, kind == SHOW_AGAINST || kind == SHOW_LOSS ? 1 : 3, 2, "STL");
-    server.send(204);
+  server.on("/api/scan", HTTP_GET, handleScan);
+  // Anything else goes to the page. On the setup network that includes the
+  // phone's captive-portal check (captive.apple.com, /generate_204...), so
+  // joining LED-Grid pops the page open by itself.
+  server.onNotFound([] {
+    server.sendHeader("Location", "http://" + server.client().localIP().toString() + "/");
+    server.send(302);
   });
-  server.onNotFound([] { server.sendHeader("Location", "/"); server.send(302); });
   server.begin();
 }
 
@@ -745,10 +871,22 @@ static void setupOta() {
   ArduinoOTA.begin();
 }
 
-// The web server and OTA run in their own task on core 0, so a slow or lossy
-// client can never stall the animation on core 1.
+// While the setup network is up, a DNS server answers every name with the
+// grid's own address, so a phone joining it finds the setup page by itself.
+static DNSServer dns;
+static volatile bool apOn = true;   // the setup network (LED-Grid) is up
+
+// The web server, DNS and OTA run in their own task on core 0, so a slow or
+// lossy client can never stall the animation on core 1.
 static void webTask(void *) {
+  bool dnsUp = false;
   for (;;) {
+    if (apOn != dnsUp) {
+      if (apOn) dns.start(53, "*", WiFi.softAPIP());
+      else dns.stop();
+      dnsUp = apOn;
+    }
+    if (dnsUp) dns.processNextRequest();
     server.handleClient();
     ArduinoOTA.handle();
     vTaskDelay(pdMS_TO_TICKS(2));
@@ -760,8 +898,6 @@ static void showNotice(const String &s) { noticeText = s; noticeStart = millis()
 // Once on home Wi-Fi the backup network goes off: running both at once costs
 // the ESP32 a lot of dropped packets. If home Wi-Fi is lost for a minute, the
 // backup network comes back until it reconnects.
-static bool apOn = true;
-
 static void setBackupAp(bool on) {
   if (on == apOn) return;
   apOn = on;
@@ -777,7 +913,16 @@ static void pollWifi() {
   if (staUp) {
     if (connected) { lostSince = 0; setBackupAp(false); }
     else if (!lostSince) lostSince = millis();
-    else if (millis() - lostSince > 60000) setBackupAp(true);
+    else {
+      if (millis() - lostSince > 60000) setBackupAp(true);
+      // Auto-reconnect can stall for good; nudge it every 30 s while lost.
+      static uint32_t lastNudge = 0;
+      if (millis() - lostSince > 15000 && millis() - lastNudge > 30000) {
+        lastNudge = millis();
+        WiFi.reconnect();
+        Serial.println("Home Wi-Fi lost; reconnecting");
+      }
+    }
     return;
   }
   if (connected) {
@@ -829,19 +974,14 @@ static void pollSerial() {
 // repeats until all have played) in the chosen palette, with a quick fade.
 // A new one starts right after each card. Not saved to flash: only the
 // rotation setting is, so it doesn't wear the flash every few minutes.
-static const uint8_t ROTATION[] = {
-  M_RAINBOW, M_PLASMA, M_FIRE, M_MATRIX, M_TWINKLE, M_LIFE, M_RIPPLE, M_LAVA, M_RADAR,
-  M_HYPNO, M_TUNNEL, M_STARS, M_METABALLS, M_KALEIDO, M_BOUNCE, M_PINWHEEL, M_RAIN,
-};
-constexpr uint8_t ROTATION_LEN = sizeof(ROTATION);
 static bool cardShowing = false;
 
 static uint8_t nextAutoMode() {
   static uint8_t bag[ROTATION_LEN], left = 0;
   if (!left) {
-    memcpy(bag, ROTATION, ROTATION_LEN);
-    for (int i = ROTATION_LEN - 1; i > 0; i--) { int j = random8(i + 1); uint8_t t = bag[i]; bag[i] = bag[j]; bag[j] = t; }
-    left = ROTATION_LEN;
+    for (int i = 0; i < ROTATION_LEN; i++) if (S.cycleMask & (1UL << i)) bag[left++] = ROTATION[i];
+    if (!left) bag[left++] = M_PLASMA;   // everything unticked: don't stall
+    for (int i = left - 1; i > 0; i--) { int j = random8(i + 1); uint8_t t = bag[i]; bag[i] = bag[j]; bag[j] = t; }
     if (bag[left - 1] == S.mode) { uint8_t t = bag[0]; bag[0] = bag[left - 1]; bag[left - 1] = t; }
   }
   return bag[--left];
@@ -888,9 +1028,9 @@ void setup() {
   setupWifi();
   setupWeb();
   setupOta();
-  setupSharks();
-  setupAmbient();
-  setupKnicks();
+  setupGames(S.team);
+  setupAmbient(S.lat, S.lon, S.city);
+  setupFlights();
   xTaskCreatePinnedToCore(webTask, "web", 8192, nullptr, 1, nullptr, 0);
 }
 
@@ -905,12 +1045,22 @@ void loop() {
   vt += (now - lastFrame) * S.speed / 50;
   lastFrame = now;
 
-  // While the Sharks are playing, Shark pong runs (goal shows still interrupt it).
-  // Knicks court likewise during a Knicks game (Sharks pong wins if both play).
-  bool pongTime = S.sharks && S.gamePong && gameLive;
-  bool courtTime = !pongTime && S.knicks && S.gamePong && knicksLive;
+  // While a followed team is playing, its game screen runs (shows still
+  // interrupt it): pong for hockey, the scoreboard for everything else. If
+  // both teams play at once, the first slot's game has the screen.
+  int live = S.gamePong ? liveSlot() : -1;
+  bool hockey = live >= 0 && teamAt(live).league == L_NHL;
+  bool pongTime = live >= 0 && hockey;
+  bool courtTime = live >= 0 && !hockey;
   uint8_t cycleLevel = autoCycleStep(now, pongTime || courtTime);
   EFFECTS[pongTime ? M_PONG : courtTime ? M_COURT : S.mode]();
+
+  // No home Wi-Fi: every 45 s, say how to set it up.
+  static uint32_t lastHint = 0;
+  if (!staUp && !staTrying && !noticeText.length() && now - lastHint > 45000) {
+    lastHint = now;
+    showNotice("JOIN WIFI " + String(AP_SSID));
+  }
 
   // Scroll the notice (e.g. the new IP) twice over everything, then drop it.
   const CRGB *out = frame;

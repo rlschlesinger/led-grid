@@ -12,7 +12,7 @@ main{max-width:560px;margin:0 auto;padding:16px 16px 48px}
 header{display:flex;align-items:center;gap:14px;margin-bottom:16px}
 h1{font-size:22px;margin:0;flex:1}
 #status{font-size:12px;color:var(--dim);text-align:right}
-#preview{width:96px;height:96px;image-rendering:pixelated;border-radius:6px;background:#000;border:1px solid var(--line)}
+#preview{width:96px;height:auto;aspect-ratio:var(--aspect,1);image-rendering:pixelated;border-radius:6px;background:#000;border:1px solid var(--line)}
 section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
 h2{font-size:15px;margin:0 0 10px}
 .modes{display:grid;grid-template-columns:repeat(auto-fill,minmax(98px,1fr));gap:8px}
@@ -25,7 +25,7 @@ input[type=range]{flex:1;accent-color:var(--accent);height:28px}
 input[type=color]{width:56px;height:34px;border:none;background:none;padding:0}
 input[type=text],input[type=password],input[type=number],select{flex:1;min-width:0;font:inherit;color:var(--text);background:#111214;border:1px solid var(--line);border-radius:8px;padding:8px}
 output{width:34px;text-align:right;color:var(--dim);font-variant-numeric:tabular-nums}
-#paint{width:100%;aspect-ratio:1;touch-action:none;image-rendering:pixelated;background:#000;border-radius:8px;display:block}
+#paint{width:100%;aspect-ratio:var(--aspect,1);touch-action:none;image-rendering:pixelated;background:#000;border-radius:8px;display:block}
 .tools{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center}
 .hint{color:var(--dim);font-size:13px;margin:6px 0 0}
 details summary{cursor:pointer;font-weight:600}
@@ -33,12 +33,28 @@ details summary{cursor:pointer;font-weight:600}
 .checks label{display:flex;gap:8px;align-items:center}
 .hidden{display:none}
 .game{margin:0;font-size:17px;font-variant-numeric:tabular-nums}
+.slot{border-top:1px solid var(--line);padding-top:10px;margin-top:10px}
+.slot:first-of-type{border-top:none;margin-top:0;padding-top:0}
+.swatch{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:2px;vertical-align:-1px}
+.slot .tools button{padding:7px 9px;font-size:14px}
+#wifiSec{border-color:var(--accent)}
 </style></head><body><main>
 <header>
   <h1>LED Grid</h1>
   <div id="status">connecting…</div>
   <canvas id="preview" width="16" height="16" title="Live preview"></canvas>
 </header>
+
+<section id="wifiSec" class="hidden">
+  <h2>Connect to Wi-Fi</h2>
+  <p class="hint" id="wifiInfo" style="margin:0 0 8px"></p>
+  <form id="wifiForm">
+    <label class="row"><span>Network</span><select id="ssidPick"><option value="">Looking for networks…</option></select></label>
+    <label class="row hidden" id="ssidOther"><span>Name</span><input type="text" id="ssid" autocomplete="off" autocapitalize="off"></label>
+    <label class="row"><span>Password</span><input type="password" id="pass" autocomplete="current-password"></label>
+    <div class="tools"><button type="submit" class="on">Save &amp; connect</button><button type="button" id="rescan">Scan again</button><button type="button" id="forget">Forget</button></div>
+  </form>
+</section>
 
 <section><h2>Effect</h2><div class="modes" id="modes"></div></section>
 
@@ -54,40 +70,30 @@ details summary{cursor:pointer;font-weight:600}
 </section>
 
 <section>
-  <h2>Sharks goal alerts</h2>
-  <p id="game" class="game">…</p>
-  <div class="checks" style="margin:10px 0"><label><input type="checkbox" id="sharks"> Alerts on</label><label><input type="checkbox" id="gamePong"> Game screens during games (Shark pong, Knicks court)</label></div>
-  <div class="tools">
-    <button data-test="goal">Test goal</button>
-    <button data-test="against">Test against</button>
-    <button data-test="win">Test win</button>
-    <button data-test="loss">Test loss</button>
-  </div>
-</section>
-
-<section>
-  <h2>Knicks alerts</h2>
-  <p id="knicksGame" class="game">…</p>
-  <div class="checks" style="margin:10px 0"><label><input type="checkbox" id="knicks"> Alerts on</label></div>
-  <div class="tools">
-    <button data-ktest="swish">Basket</button>
-    <button data-ktest="three">Three</button>
-    <button data-ktest="opp">Opp. basket</button>
-    <button data-ktest="run">Knicks run</button>
-    <button data-ktest="lead">Knicks lead</button>
-    <button data-ktest="brick">Opp. run</button>
-    <button data-ktest="win">Win</button>
-    <button data-ktest="loss">Loss</button>
-  </div>
+  <h2>Teams</h2>
+  <p class="hint" style="margin:0 0 10px">A show in the team's colours when they score, win or lose, and a game screen while they play. NHL, NBA, NFL and MLB.</p>
+  <div id="slots"></div>
+  <div class="checks" style="margin:12px 0 0;grid-template-columns:1fr"><label><input type="checkbox" id="gamePong"> Game screen while a team plays</label></div>
 </section>
 
 <section>
   <h2>Quarter-hour card</h2>
   <p class="hint" id="homeInfo" style="margin:0 0 8px"></p>
-  <div class="checks" style="margin:10px 0"><label><input type="checkbox" id="clockCard"> Show on :00 :15 :30 :45</label><label><input type="checkbox" id="autoCycle"> Cycle animations between</label></div>
-  <label class="row"><span>Change every</span><select id="cycleMins"><option value="1">1 minute</option><option value="2">2 minutes</option><option value="3">3 minutes</option><option value="5">5 minutes</option></select></label>
-  <p class="hint">Cycles every animation except Shark pong, Solid, Text, Draw and Layout test, in the palette above. Picking an effect by hand turns cycling off.</p>
+  <form id="placeForm" class="row" style="display:flex;gap:8px;margin:10px 0">
+    <input type="text" id="place" placeholder="City or ZIP for the weather" autocomplete="postal-code" style="flex:1">
+    <button type="submit">Set</button>
+  </form>
+  <div id="placePick" class="tools hidden"></div>
+  <div class="checks" style="margin:10px 0"><label><input type="checkbox" id="clockCard"> Show on :00 :15 :30 :45</label></div>
   <div class="tools"><button id="cardTest">Show it now</button></div>
+</section>
+
+<section>
+  <h2>Between cards</h2>
+  <div class="checks" style="margin:0 0 6px"><label><input type="checkbox" id="autoCycle"> Cycle animations</label></div>
+  <label class="row"><span>Change every</span><select id="cycleMins"><option value="1">1 minute</option><option value="2">2 minutes</option><option value="3">3 minutes</option><option value="5">5 minutes</option></select></label>
+  <div class="checks" id="rotation"></div>
+  <p class="hint">Plays the ticked animations in a shuffled order, in the palette above. Picking an effect by hand turns cycling off.</p>
 </section>
 
 <section id="drawPanel" class="hidden">
@@ -102,7 +108,7 @@ details summary{cursor:pointer;font-weight:600}
     <button id="imgBtn">Image…</button>
     <input type="file" id="img" accept="image/*" class="hidden">
   </div>
-  <p class="hint">Drag to paint. Images are cropped square and shrunk to 16×16.</p>
+  <p class="hint" id="paintHint">Drag to paint. Images are cropped square and shrunk to 16×16.</p>
 </section>
 
 <section>
@@ -114,24 +120,23 @@ details summary{cursor:pointer;font-weight:600}
     <label><input type="checkbox" id="columns"> Wired in columns</label>
     <label><input type="checkbox" id="flipX"> Flip left/right</label>
     <label><input type="checkbox" id="flipY"> Flip up/down</label>
+    <label id="swapRow" class="hidden"><input type="checkbox" id="swapPanels"> Data enters the right panel</label>
   </div>
   <label class="row"><span>Power limit</span><input type="number" id="maxMilliamps" min="200" max="20000" step="100"><span style="width:auto">mA</span></label>
   <p class="hint">Dims everything to stay under this current. Set it to your 5 V supply's rating, minus a little.</p>
 
-  <h2 style="margin-top:18px">Home Wi-Fi</h2>
-  <p class="hint" id="wifiInfo"></p>
-  <form id="wifiForm">
-    <label class="row"><span>Network</span><input type="text" id="ssid" autocomplete="off" autocapitalize="off"></label>
-    <label class="row"><span>Password</span><input type="password" id="pass"></label>
-    <div class="tools"><button type="submit">Save &amp; restart</button><button type="button" id="forget">Forget</button></div>
-  </form>
+  <h2 style="margin-top:18px">Wi-Fi</h2>
+  <p class="hint" id="wifiNow"></p>
+  <div class="tools"><button type="button" id="wifiChange">Change Wi-Fi…</button></div>
 </details>
 </section>
 </main>
 <script>
 const $ = id => document.getElementById(id);
-const N = 16;
+let NW = 16, NH = 16;   // grid size; the board reports it (32×16 for two panels)
 let state = null;
+// [league, ESPN id, abbreviation, name, LED colour 1, LED colour 2]
+const TEAMS = [["nhl",25,"ANA","Ducks","e64502","ffffff"],["nhl",1,"BOS","Bruins","e6a618","ffffff"],["nhl",2,"BUF","Sabres","0074e6","e6a618"],["nhl",3,"CGY","Flames","e61b34","ffffff"],["nhl",7,"CAR","Hurricanes","e60427","ffffff"],["nhl",4,"CHI","Blackhawks","e61938","ffffff"],["nhl",17,"COL","Avalanche","e60060","0085e6"],["nhl",29,"CBJ","Blue Jackets","006ae6","e61938"],["nhl",9,"DAL","Stars","37e682","ffffff"],["nhl",5,"DET","Red Wings","e60527","e6e6e6"],["nhl",6,"EDM","Oilers","0051e6","e64500"],["nhl",26,"FLA","Panthers","e61937","006ae6"],["nhl",8,"LA","Kings","d7e2e6","ffffff"],["nhl",30,"MIN","Wild","3ae6a8","e61838"],["nhl",10,"MTL","Canadiens","e61538","0267e6"],["nhl",27,"NSH","Predators","e6a92d","006ae6"],["nhl",11,"NJ","Devils","e60b2c","ffffff"],["nhl",12,"NYI","Islanders","007ae6","e6762e"],["nhl",13,"NYR","Rangers","0072e6","e61937"],["nhl",14,"OTT","Senators","e61b34","e6b76d"],["nhl",15,"PHI","Flyers","e65020","ffffff"],["nhl",16,"PIT","Penguins","e6a618","ffffff"],["nhl",18,"SJ","Sharks","00c8e6","ffffff"],["nhl",124292,"SEA","Kraken","003be6","a4dee6"],["nhl",19,"STL","Blues","008be6","e6a618"],["nhl",20,"TB","Lightning","0071e6","e6e6e6"],["nhl",21,"TOR","Maple Leafs","0071e6","e6e6e6"],["nhl",129764,"UTAH","Mammoth","7db6e6","ffffff"],["nhl",22,"VAN","Canucks","0071e6","00e68c"],["nhl",37,"VGK","Golden Knights","b3dce6","e6c173"],["nhl",23,"WSH","Capitals","e61a33","276ee6"],["nhl",28,"WPG","Jets","006ae6","e61538"],["nba",1,"ATL","Hawks","e61235","e6a823"],["nba",2,"BOS","Celtics","00e67e","e6e6e6"],["nba",17,"BKN","Nets","e6e6e6","ffffff"],["nba",30,"CHA","Hornets","00c0e6","4526e6"],["nba",4,"CHI","Bulls","e61349","ffffff"],["nba",5,"CLE","Cavaliers","e60060","e6b571"],["nba",6,"DAL","Mavericks","0082e6","d5dfe6"],["nba",7,"DEN","Nuggets","327ae6","e6b221"],["nba",8,"DET","Pistons","306ee6","e61235"],["nba",9,"GS","Warriors","e6a823","306ee6"],["nba",10,"HOU","Rockets","e61032","ffffff"],["nba",11,"IND","Pacers","2b7ee6","e6c01d"],["nba",12,"LAC","Clippers","4254e6","e61235"],["nba",13,"LAL","Lakers","9541e6","e6a823"],["nba",29,"MEM","Grizzlies","7fa1e6","4254e6"],["nba",14,"MIA","Heat","e60046","ffffff"],["nba",15,"MIL","Bucks","00e657","e6d9bf"],["nba",16,"MIN","Timberwolves","3c97e6","94e652"],["nba",3,"NO","Pelicans","247ae6","e6c173"],["nba",18,"NY","Knicks","306ee6","e67c24"],["nba",25,"OKC","Thunder","0091e6","e63923"],["nba",19,"ORL","Magic","0166e6","dce2e6"],["nba",20,"PHI","76ers","306ee6","e61235"],["nba",21,"PHX","Suns","4d22e6","e66020"],["nba",22,"POR","Trail Blazers","e63c40","ffffff"],["nba",23,"SAC","Kings","a050e6","bcd8e6"],["nba",24,"SA","Spurs","d5dfe6","ffffff"],["nba",28,"TOR","Raptors","e61348","ffffff"],["nba",26,"UTAH","Jazz","7e00e6","7eaae6"],["nba",27,"WSH","Wizards","e61838","006ce6"],["nfl",22,"ARI","Cardinals","e60337","e6e6e6"],["nfl",1,"ATL","Falcons","e62242","ffffff"],["nfl",33,"BAL","Ravens","5525e6","ffffff"],["nfl",2,"BUF","Bills","0053e6","e60b0b"],["nfl",29,"CAR","Panthers","0097e6","ffffff"],["nfl",3,"CHI","Bears","2c6fe6","e64100"],["nfl",4,"CIN","Bengals","e64812","ffffff"],["nfl",5,"CLE","Browns","e6881a","e63600"],["nfl",6,"DAL","Cowboys","0069e6","d7e0e6"],["nfl",7,"DEN","Broncos","2278e6","e64502"],["nfl",8,"DET","Lions","0095e6","e6e6e6"],["nfl",9,"GB","Packers","5ee693","e6a410"],["nfl",34,"HOU","Texans","e60027","ffffff"],["nfl",11,"IND","Colts","0074e6","e6e6e6"],["nfl",30,"JAX","Jaguars","00c6e6","e6ad2d"],["nfl",12,"KC","Chiefs","e61838","e6a410"],["nfl",13,"LV","Raiders","d9e2e6","ffffff"],["nfl",24,"LAC","Chargers","0095e6","e6af0d"],["nfl",14,"LAR","Rams","0052e6","e6bd00"],["nfl",15,"MIA","Dolphins","00d8e6","e64502"],["nfl",16,"MIN","Vikings","8b43e6","e6b32a"],["nfl",17,"NE","Patriots","0069e6","e60e38"],["nfl",18,"NO","Saints","e6cd9a","ffffff"],["nfl",19,"NYG","Giants","006de6","e62948"],["nfl",20,"NYJ","Jets","2de6a9","e6e6e6"],["nfl",21,"PHI","Eagles","12c5e6","ffffff"],["nfl",23,"PIT","Steelers","e6a410","ffffff"],["nfl",25,"SF","49ers","e60000","e6c577"],["nfl",26,"SEA","Seahawks","0069e6","7fe630"],["nfl",27,"TB","Buccaneers","e62242","e6d7c5"],["nfl",10,"TEN","Titans","4aa3e6","0061e6"],["nfl",28,"WSH","Commanders","e63333","e6a410"],["mlb",29,"ARI","Diamondbacks","e6203c","ffffff"],["mlb",11,"ATH","Athletics","00e6c9","e6ab1d"],["mlb",15,"ATL","Braves","2b7ee6","e60f3a"],["mlb",1,"BAL","Orioles","e64801","ffffff"],["mlb",2,"BOS","Red Sox","2373e6","e63a45"],["mlb",16,"CHC","Cubs","1858e6","e63b3a"],["mlb",4,"CHW","White Sox","d5dfe6","ffffff"],["mlb",17,"CIN","Reds","e60124","e6e6e6"],["mlb",5,"CLE","Guardians","006ce6","e61938"],["mlb",27,"COL","Rockies","6a00e6","ffffff"],["mlb",6,"DET","Tigers","247ae6","e64011"],["mlb",18,"HOU","Astros","006ae6","e66c1e"],["mlb",7,"KC","Royals","0077e6","7fb9e6"],["mlb",3,"LAA","Angels","e60029","d5dfe6"],["mlb",19,"LAD","Dodgers","0085e6","e6e6e6"],["mlb",28,"MIA","Marlins","00a7e6","ffffff"],["mlb",8,"MIL","Brewers","3a7ee6","e6b328"],["mlb",9,"MIN","Twins","0b6fe6","e60e33"],["mlb",21,"NYM","Mets","005be6","e6500e"],["mlb",10,"NYY","Yankees","3d73e6","d5dfe6"],["mlb",22,"PHI","Phillies","e61828","0060e6"],["mlb",23,"PIT","Pirates","e6a723","ffffff"],["mlb",25,"SD","Padres","e6b121","ffffff"],["mlb",26,"SF","Giants","e6521b","ffffff"],["mlb",12,"SEA","Mariners","00e6e6","2076e6"],["mlb",24,"STL","Cardinals","e60c18","004ae6"],["mlb",30,"TB","Rays","166ee6","8fbce6"],["mlb",13,"TEX","Rangers","0060e6","e61425"],["mlb",14,"TOR","Blue Jays","1f78e6","6cade6"],["mlb",20,"WSH","Nationals","e60004","2b56e6"]];   // tools/teams.py
 
 // One request in flight per endpoint; newer payloads replace queued ones.
 function sender(url) {
@@ -182,61 +187,188 @@ function apply(s, fromServer) {
   put('textSize', s.textSize);
   put('maxMilliamps', s.maxMilliamps);
   put('cycleMins', s.cycleMins);
-  for (const k of ['serpentine', 'columns', 'flipX', 'flipY', 'sharks', 'knicks', 'gamePong', 'clockCard', 'autoCycle']) $(k).checked = s[k];
-  $('game').textContent = gameText(s.game || {});
-  $('knicksGame').textContent = knicksText(s.knicksGame || {});
+  if (s.w && (s.w !== NW || s.h !== NH)) setSize(s.w, s.h);
+  $('swapRow').classList.toggle('hidden', NW <= 16);
+  for (const k of ['serpentine', 'columns', 'flipX', 'flipY', 'swapPanels', 'gamePong', 'clockCard', 'autoCycle']) $(k).checked = !!s[k];
+  if (first) { buildSlots(); buildRotation(s); }
+  showTeams(s.teams || []);
+  [...$('rotation').querySelectorAll('input')].forEach(c => c.checked = !!(s.cycleMask & (1 << c.dataset.bit)));
   const h = s.home || {};
-  $('homeInfo').textContent = 'Date, time, weather, then the sun or moon. Home: ' + (h.city || '?') + (h.temp !== undefined ? ` · ${h.temp}°F now` : '');
+  $('homeInfo').textContent = 'Date, time and weather, then the sun or moon. Weather for ' + (h.city || 'nowhere yet') + (h.temp !== undefined ? ` · ${h.temp}°F now` : '');
   const name = s.modes[s.mode];
   $('textOpts').classList.toggle('hidden', name !== 'Text');
   const drawing = name === 'Draw';
   if (drawing && $('drawPanel').classList.contains('hidden')) loadCanvas();
   $('drawPanel').classList.toggle('hidden', !drawing);
   const w = s.wifi;
-  $('wifiInfo').textContent = w.connected
-    ? `Joined “${w.ssid}” at ${w.ip}. Also reachable on the “${w.ap}” network at ${w.apIp}.`
-    : w.ssid ? `Saved “${w.ssid}” but not connected. Its own network “${w.ap}” is at ${w.apIp}.`
-             : `Not joined to any network. Its own network “${w.ap}” is at ${w.apIp}.`;
-  if (document.activeElement !== $('ssid')) $('ssid').value = w.ssid;
+  $('wifiNow').textContent = w.connected ? `Joined “${w.ssid}” at ${w.ip}.`
+    : `Not on your Wi-Fi. Its own network “${w.ap}” is at ${w.apIp}.`;
+  $('wifiInfo').textContent = w.ssid && !w.connected
+    ? `Couldn't join “${w.ssid}”. Check the password, or pick another network.`
+    : 'Pick your home network. The grid restarts, joins it, and scrolls its new address across the panel. Open that address afterwards.';
+  if (first && !w.connected) openWifi();
   online(true);
 }
 
-function gameText(g) {
-  const vs = g.home ? `vs ${g.opp}` : `at ${g.opp}`;
+// ---- Teams --------------------------------------------------------------------
+const LEAGUES = [['', 'None'], ['nhl', 'NHL'], ['nba', 'NBA'], ['nfl', 'NFL'], ['mlb', 'MLB']];
+// Test buttons per league: [label, kind, points]
+const TESTS = {
+  nhl: [['Goal', 'goal'], ['Against', 'against'], ['Win', 'win'], ['Loss', 'loss']],
+  nfl: [['Touchdown', 'goal', 6], ['Field goal', 'goal', 3], ['Against', 'against'], ['Win', 'win'], ['Loss', 'loss']],
+  mlb: [['Run', 'goal', 1], ['3 runs', 'goal', 3], ['Against', 'against'], ['Win', 'win'], ['Loss', 'loss']],
+  nba: [['Basket', 'swish'], ['Three', 'three'], ['Opp. basket', 'opp'], ['Run', 'run'], ['Lead', 'lead'], ['Opp. run', 'brick'], ['Win', 'win'], ['Loss', 'loss']],
+};
+const specOf = t => t ? `${t[0]}:${t[1]}:${t[2]}:${t[4]}:${t[5]}` : '';
+let shownLeague = ['', ''];
+
+function fillTeams(i, league) {
+  const sel = $('tm' + i);
+  sel.innerHTML = '';
+  sel.classList.toggle('hidden', !league);
+  sel.add(new Option('Pick a team…', ''));
+  TEAMS.map((t, k) => [t, k]).filter(([t]) => t[0] === league).sort((a, b) => a[0][3].localeCompare(b[0][3]))
+    .forEach(([t, k]) => sel.add(new Option(t[3], k)));
+}
+
+function buildSlots() {
+  for (let i = 0; i < 2; i++) {
+    const d = document.createElement('div');
+    d.className = 'slot';
+    d.innerHTML = `<label class="row"><span>Team ${i + 1}</span><select id="lg${i}"></select><select id="tm${i}"></select></label>
+      <p class="game" id="game${i}"></p><div class="tools" id="tests${i}"></div>`;
+    $('slots').appendChild(d);
+    LEAGUES.forEach(([k, n]) => $('lg' + i).add(new Option(n, k)));
+    $('lg' + i).onchange = e => {
+      fillTeams(i, e.target.value);
+      shownLeague[i] = e.target.value;
+      if (!e.target.value) set({['team' + i]: ''});   // None: stop following
+    };
+    $('tm' + i).onchange = e => { if (e.target.value !== '') set({['team' + i]: specOf(TEAMS[e.target.value])}); };
+  }
+}
+
+function gameText(t) {
+  const g = t.game || {}, vs = g.home ? `vs ${g.opp}` : `at ${g.opp}`;
   switch (g.state) {
-    case 'live': return `SJS ${g.us} – ${g.them} ${g.opp} · ${g.period}${g.clock ? ' ' + g.clock : ''}`;
-    case 'final': return `Final: SJS ${g.us} – ${g.them} ${g.opp}`;
+    case 'live': return `${t.abbr} ${g.us} – ${g.them} ${g.opp}${g.detail ? ' · ' + g.detail : ''}`;
+    case 'final': return `Final: ${t.abbr} ${g.us} – ${g.them} ${g.opp}`;
     case 'next': {
       const d = new Date(g.start);
       return `Next: ${vs}, ${d.toLocaleDateString([], {weekday: 'short', month: 'short', day: 'numeric'})} ${d.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}`;
     }
-    case 'off': return 'Alerts are off.';
+    case 'off': return '';
     case 'offline': return 'Needs home Wi-Fi to follow games.';
-    case 'none': return 'No Sharks games this week.';
+    case 'none': return 'No games scheduled.';
     default: return 'Checking the schedule…';
   }
 }
-function knicksText(g) {
-  const vs = g.home ? `vs ${g.opp}` : `at ${g.opp}`;
-  switch (g.state) {
-    case 'live': return `NYK ${g.us} – ${g.them} ${g.opp} · ${g.period}${g.clock ? ' ' + g.clock : ''}`;
-    case 'final': return `Final: NYK ${g.us} – ${g.them} ${g.opp}`;
-    case 'next': {
-      const d = new Date(g.start);
-      return `Next: ${vs}, ${d.toLocaleDateString([], {weekday: 'short', month: 'short', day: 'numeric'})} ${d.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}`;
+
+function showTeams(list) {
+  list.forEach((t, i) => {
+    const lg = $('lg' + i), tm = $('tm' + i);
+    if (document.activeElement !== lg && document.activeElement !== tm) {
+      if (t.league !== shownLeague[i]) { lg.value = t.league; fillTeams(i, t.league); shownLeague[i] = t.league; }
+      const k = TEAMS.findIndex(x => x[0] === t.league && x[1] === t.id);
+      tm.value = k >= 0 ? k : '';
     }
-    case 'off': return 'Alerts are off.';
-    case 'offline': return 'Needs home Wi-Fi to follow games.';
-    case 'none': return 'No Knicks games scheduled.';
-    default: return 'Checking the schedule…';
-  }
+    const line = $('game' + i);
+    line.textContent = '';
+    if (t.league) for (const c of [t.c1, t.c2]) {
+      const sw = document.createElement('span');
+      sw.className = 'swatch';
+      sw.style.background = '#' + c;
+      line.appendChild(sw);
+    }
+    line.append(' ' + gameText(t));
+    const tests = $('tests' + i);
+    if (tests.dataset.league !== t.league) {
+      tests.dataset.league = t.league;
+      tests.innerHTML = '';
+      for (const [label, kind, pts] of TESTS[t.league] || []) {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.onclick = () => fetch('/api/test', {method: 'POST', body: new URLSearchParams({slot: i, kind, ...(pts ? {pts} : {})})});
+        tests.appendChild(b);
+      }
+    }
+  });
 }
-document.querySelectorAll('[data-ktest]').forEach(b =>
-  b.onclick = () => fetch('/api/knicks/test', {method: 'POST', body: new URLSearchParams({kind: b.dataset.ktest})}));
-$('knicks').addEventListener('change', e => set({knicks: e.target.checked ? 1 : 0}));
-document.querySelectorAll('[data-test]').forEach(b =>
-  b.onclick = () => fetch('/api/sharks/test', {method: 'POST', body: new URLSearchParams({kind: b.dataset.test})}));
-$('sharks').addEventListener('change', e => set({sharks: e.target.checked ? 1 : 0}));
+
+// ---- Animations in the rotation -------------------------------------------------
+function buildRotation(s) {
+  s.rotation.forEach((m, bit) => {
+    const l = document.createElement('label');
+    l.innerHTML = `<input type="checkbox" data-bit="${bit}"> `;
+    l.append(s.modes[m]);
+    $('rotation').appendChild(l);
+  });
+  $('rotation').addEventListener('change', () => {
+    let mask = 0;
+    $('rotation').querySelectorAll('input').forEach(c => { if (c.checked) mask |= 1 << c.dataset.bit; });
+    set({cycleMask: mask >>> 0});
+  });
+}
+
+// ---- Weather location: looked up here (Open-Meteo, no key), sent rounded ----
+function setPlace(r) {
+  const name = r.name + (r.admin1 ? ', ' + r.admin1 : '');
+  set({lat: r.latitude.toFixed(2), lon: r.longitude.toFixed(2), city: r.name});
+  $('placePick').classList.add('hidden');
+  $('place').value = '';
+  $('place').placeholder = name;
+}
+$('placeForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const q = $('place').value.trim();
+  if (!q) return;
+  const [name, region] = q.split(',').map(x => x.trim());
+  const pick = $('placePick');
+  pick.innerHTML = '';
+  pick.classList.remove('hidden');
+  try {
+    const d = await (await fetch('https://geocoding-api.open-meteo.com/v1/search?count=6&language=en&format=json&name=' + encodeURIComponent(name))).json();
+    let rs = d.results || [];
+    if (region) {   // "Reno, NV" / "Portland, Oregon": prefer matching places
+      const R = region.toLowerCase();
+      const m = rs.filter(r => [r.admin1, r.country, r.country_code].some(v => v && (v.toLowerCase().startsWith(R) || (R.length === 2 && v.toLowerCase() === R))));
+      if (m.length) rs = m;
+    }
+    if (rs.length === 1) return setPlace(rs[0]);
+    if (!rs.length) { pick.textContent = 'Nothing found. Try a city name or ZIP code.'; return; }
+    rs.forEach(r => {
+      const b = document.createElement('button');
+      b.textContent = [r.name, r.admin1, r.country_code].filter(Boolean).join(', ');
+      b.onclick = () => setPlace(r);
+      pick.appendChild(b);
+    });
+  } catch (err) { pick.textContent = 'Couldn\'t look that up. The phone needs internet for this.'; }
+});
+
+// ---- Wi-Fi: pick a network the grid can see ------------------------------------
+async function scan() {
+  const sel = $('ssidPick');
+  sel.innerHTML = '<option value="">Looking for networks…</option>';
+  try {
+    const nets = await (await fetch('/api/scan')).json();
+    sel.innerHTML = '';
+    sel.add(new Option(nets.length ? 'Pick a network…' : 'No networks found', ''));
+    for (const n of nets) sel.add(new Option(`${n.ssid}${n.open ? ' (open)' : ''}  ${n.rssi > -60 ? '▂▄▆' : n.rssi > -75 ? '▂▄' : '▂'}`, n.ssid));
+  } catch (e) { sel.innerHTML = '<option value="">Couldn\'t scan</option>'; }
+  sel.add(new Option('Other network…', '\u0000other'));
+}
+function openWifi() {
+  $('wifiSec').classList.remove('hidden');
+  scan();
+}
+$('ssidPick').addEventListener('change', e => {
+  const other = e.target.value === '\u0000other';
+  $('ssidOther').classList.toggle('hidden', !other);
+  if (other) $('ssid').focus();
+});
+$('rescan').onclick = scan;
+$('wifiChange').onclick = () => { openWifi(); $('wifiSec').scrollIntoView({behavior: 'smooth'}); };
+
 $('gamePong').addEventListener('change', e => set({gamePong: e.target.checked ? 1 : 0}));
 $('clockCard').addEventListener('change', e => set({clockCard: e.target.checked ? 1 : 0}));
 $('autoCycle').addEventListener('change', e => set({autoCycle: e.target.checked ? 1 : 0}));
@@ -244,11 +376,7 @@ $('cycleMins').addEventListener('change', e => set({cycleMins: e.target.value}))
 $('cardTest').onclick = () => fetch('/api/card/test', {method: 'POST'});
 setInterval(async () => {
   if (document.visibilityState !== 'visible') return;
-  try {
-    const s = await (await fetch('/api/state')).json();
-    $('game').textContent = gameText(s.game || {});
-    $('knicksGame').textContent = knicksText(s.knicksGame || {});
-  } catch (e) {}
+  try { showTeams((await (await fetch('/api/state')).json()).teams || []); } catch (e) {}
 }, 10000);
 
 // Sliders: send while dragging, throttled.
@@ -266,14 +394,14 @@ $('palette').addEventListener('change', e => set({palette: e.target.value}));
 $('textSize').addEventListener('change', e => set({textSize: e.target.value}));
 $('text').addEventListener('input', e => set({text: e.target.value}));
 $('maxMilliamps').addEventListener('change', e => set({maxMilliamps: e.target.value}));
-for (const k of ['serpentine', 'columns', 'flipX', 'flipY'])
+for (const k of ['serpentine', 'columns', 'flipX', 'flipY', 'swapPanels'])
   $(k).addEventListener('change', e => set({[k]: e.target.checked ? 1 : 0}));
 
 // Live preview of what the panel shows.
 const pctx = $('preview').getContext('2d');
 function drawHex(ctx, hex) {
-  const img = ctx.createImageData(N, N);
-  for (let i = 0; i < N * N; i++) {
+  const img = ctx.createImageData(NW, NH);
+  for (let i = 0; i < NW * NH; i++) {
     img.data[i * 4] = parseInt(hex.substr(i * 6, 2), 16);
     img.data[i * 4 + 1] = parseInt(hex.substr(i * 6 + 2, 2), 16);
     img.data[i * 4 + 2] = parseInt(hex.substr(i * 6 + 4, 2), 16);
@@ -285,7 +413,7 @@ async function pollPreview() {
   if (document.visibilityState === 'visible') {
     try {
       const hex = await (await fetch('/api/frame')).text();
-      if (hex.length === N * N * 6) drawHex(pctx, hex);
+      if (hex.length === NW * NH * 6) drawHex(pctx, hex);
       online(true);
     } catch (e) { online(false); }
   }
@@ -294,7 +422,16 @@ async function pollPreview() {
 
 // Drawing.
 const paint = $('paint'), ctx = paint.getContext('2d');
-let pixels = new Array(N * N).fill('000000');
+let pixels = new Array(NW * NH).fill('000000');
+function setSize(w, h) {
+  NW = w; NH = h;
+  for (const c of [$('preview'), paint]) { c.width = w; c.height = h; }
+  document.documentElement.style.setProperty('--aspect', `${w} / ${h}`);
+  $('preview').style.width = 96 * w / h + 'px';
+  $('paintHint').textContent = `Drag to paint. Images are cropped to fit and shrunk to ${w}×${h}.`;
+  pixels = new Array(w * h).fill('000000');
+  render();
+}
 let erase = false, canvasTimer = 0;
 function render() { drawHex(ctx, pixels.join('')); }
 function pushCanvas() {
@@ -305,13 +442,13 @@ function pushCanvas() {
 async function loadCanvas() {
   try {
     const hex = await (await fetch('/api/canvas')).text();
-    if (hex.length === N * N * 6) { pixels = hex.match(/.{6}/g); render(); }
+    if (hex.length === NW * NH * 6) { pixels = hex.match(/.{6}/g); render(); }
   } catch (e) {}
 }
 function cell(e) {
   const r = paint.getBoundingClientRect();
-  const x = Math.floor((e.clientX - r.left) / r.width * N), y = Math.floor((e.clientY - r.top) / r.height * N);
-  return x >= 0 && x < N && y >= 0 && y < N ? y * N + x : -1;
+  const x = Math.floor((e.clientX - r.left) / r.width * NW), y = Math.floor((e.clientY - r.top) / r.height * NH);
+  return x >= 0 && x < NW && y >= 0 && y < NH ? y * NW + x : -1;
 }
 function dab(e) {
   const i = cell(e);
@@ -331,13 +468,14 @@ $('img').addEventListener('change', e => {
   if (!f) return;
   const im = new Image();
   im.onload = () => {
-    const c = document.createElement('canvas'); c.width = c.height = N;
+    const c = document.createElement('canvas'); c.width = NW; c.height = NH;
     const x = c.getContext('2d');
     x.imageSmoothingQuality = 'high';
-    const s = Math.min(im.width, im.height);
-    x.drawImage(im, (im.width - s) / 2, (im.height - s) / 2, s, s, 0, 0, N, N);
-    const d = x.getImageData(0, 0, N, N).data;
-    for (let i = 0; i < N * N; i++)
+    // Crop the middle of the image to the grid's shape.
+    const k = Math.min(im.width / NW, im.height / NH), sw = NW * k, sh = NH * k;
+    x.drawImage(im, (im.width - sw) / 2, (im.height - sh) / 2, sw, sh, 0, 0, NW, NH);
+    const d = x.getImageData(0, 0, NW, NH).data;
+    for (let i = 0; i < NW * NH; i++)
       pixels[i] = [d[i * 4], d[i * 4 + 1], d[i * 4 + 2]].map(v => v.toString(16).padStart(2, '0')).join('');
     pushCanvas();
     URL.revokeObjectURL(im.src);
@@ -351,7 +489,13 @@ async function saveWifi(ssid, pass) {
   const r = await fetch('/api/wifi', {method: 'POST', body: new URLSearchParams({ssid, pass})});
   alert(await r.text() + (ssid ? ' Its new address scrolls across the grid once it joins.' : ''));
 }
-$('wifiForm').addEventListener('submit', e => { e.preventDefault(); saveWifi($('ssid').value, $('pass').value); });
+$('wifiForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const pick = $('ssidPick').value;
+  const ssid = pick === '\u0000other' ? $('ssid').value.trim() : pick;
+  if (!ssid) { alert('Pick a network first.'); return; }
+  saveWifi(ssid, $('pass').value);
+});
 $('forget').onclick = () => saveWifi('', '');
 
 (async function start() {

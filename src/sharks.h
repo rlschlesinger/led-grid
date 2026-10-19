@@ -1,194 +1,34 @@
-// Sharks goal alerts. Included once, from main.cpp, after the drawing helpers.
-//
-// A task on core 0 polls api-web.nhle.com: the Sharks' week schedule every
-// 2 minutes, and the live game every 10 seconds. Score changes become events
-// on a queue. The render loop on core 1 plays each as a full-screen show over
-// whatever effect is running:
-//   Sharks goal   teal/white strobe, rings, a fin swimming, "GOAL!", the score
-//   goal against  the shark swims in and X-rays into a skeleton, "UGH.", the score
-//   final         a win: a fin, JAWS chomping, fireworks, "SHARKS WIN!"; or the shark goes belly-up and a tombstone reads RIP, "FINAL"
+// Shows for every league (score, scored against, win, loss) in the team's own
+// colours, plus pong as the hockey game screen. Included once, from main.cpp,
+// after games.h. The Sharks get their own extras: a fin over the waves on a
+// goal, the shark turning to bones when scored against, JAWS when they win and
+// the shark going belly-up when they lose.
+//   score        team-colour strobe and rings, the words ("GOAL!",
+//                "TOUCHDOWN!", "2 RUNS!"...), the score
+//   against      a red flash, "UGH.", the score
+//   win          fireworks in the team's colours, "XXX WIN!", the score
+//   loss         a tombstone reading RIP, "FINAL", the score
 #pragma once
-#include <HTTPClient.h>
-#include <WiFiClientSecure.h>
-#include <ArduinoJson.h>
 
-static const char *TEAM = "SJS";
 static const CRGB TEAL(0, 160, 175);      // Pacific Teal, brightened for LEDs
 static const CRGB ORANGE(234, 90, 0);
+static const CRGB KBLUE(0, 85, 200), KORANGE(245, 110, 20);   // the Knicks', tuned on the panel
 
-enum ShowKind : uint8_t {
-  SHOW_NONE, SHOW_GOAL, SHOW_AGAINST, SHOW_WIN, SHOW_LOSS,
-  K_SWISH, K_THREE, K_OPP, K_RUN, K_LEAD, K_BRICK, K_WIN, K_LOSS,   // Knicks (knicks.h)
-};
+// The team colours for whatever is drawing right now: set at the start of each
+// show, and each frame by the game screens.
+static Team showTeam;
+static CRGB TC1 = TEAL, TC2 = ORANGE;
 
-struct GameEvent {
-  ShowKind kind;
-  uint8_t us, them;
-  char opp[4];
-  uint8_t extra;      // Knicks: points in a basket, or the length of a run
-};
-
-static QueueHandle_t gameEvents;
-static SemaphoreHandle_t gameLock;
-static String gameStatus = "{\"state\":\"idle\"}";   // JSON for the web page; guarded by gameLock
-static volatile bool gameLive = false;                // read by the render loop: play pong
-static volatile uint8_t liveUs = 0, liveThem = 0;
-static volatile bool knicksLive = false;               // set in knicks.h; Knicks court + card skip
-
-// ---- Fetching (core 0) ------------------------------------------------------
-static bool fetchJson(const String &url, JsonDocument &doc, const JsonDocument &filter) {
-  WiFiClientSecure client;
-  client.setInsecure();                    // public scores; skip certificate checks
-  HTTPClient http;
-  http.useHTTP10(true);                    // no chunked encoding, so the stream parses directly
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);   // ".../now" redirects to a date
-  http.setTimeout(4000);                   // the parser spins this long on a stall; keep it under the 5 s watchdog
-  if (!http.begin(client, url)) return false;
-  int code = http.GET();
-  bool ok = false;
-  if (code == 200) ok = !deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter),
-                     DeserializationOption::NestingLimit(32));   // ESPN nests past the default 10
-  else Serial.printf("NHL %s -> HTTP %d\n", url.c_str(), code);
-  http.end();
-  return ok;
+static void useTeam(const Team &t) {
+  showTeam = t;
+  TC1 = isSharks(t) ? TEAL : isKnicks(t) ? KBLUE : t.c1;
+  TC2 = isSharks(t) ? ORANGE : isKnicks(t) ? KORANGE : t.c2;
 }
 
-static void setStatus(const String &json) {
-  xSemaphoreTake(gameLock, portMAX_DELAY);
-  gameStatus = json;
-  xSemaphoreGive(gameLock);
-}
-
-static String currentStatus() {
-  xSemaphoreTake(gameLock, portMAX_DELAY);
-  String s = gameStatus;
-  xSemaphoreGive(gameLock);
-  return s;
-}
-
-static void pushEvent(ShowKind kind, int us, int them, const char *opp, int extra = 0) {
-  GameEvent e{kind, (uint8_t)us, (uint8_t)them, {0}, (uint8_t)extra};
-  strlcpy(e.opp, opp, sizeof(e.opp));
-  xQueueSend(gameEvents, &e, 0);
-}
-
-static bool isLive(const char *state) { return !strcmp(state, "LIVE") || !strcmp(state, "CRIT"); }
-static bool isOver(const char *state) { return !strcmp(state, "FINAL") || !strcmp(state, "OFF"); }
-
-// Follows one live game until it ends (or alerts are switched off). A Wi-Fi
-// blip just waits, so Shark pong doesn't drop out mid-game.
-static void followGame(uint32_t id, int us, int them, bool home, const String &opp) {
-  JsonDocument filter;
-  filter["gameState"] = true;
-  filter["awayTeam"]["score"] = true;
-  filter["homeTeam"]["score"] = true;
-  filter["periodDescriptor"]["number"] = true;
-  filter["periodDescriptor"]["periodType"] = true;
-  filter["clock"]["timeRemaining"] = true;
-  filter["clock"]["inIntermission"] = true;
-  String url = "https://api-web.nhle.com/v1/gamecenter/" + String(id) + "/landing";
-  Preferences p;
-
-  while (S.sharks) {
-    JsonDocument doc;
-    if (WiFi.status() == WL_CONNECTED && fetchJson(url, doc, filter)) {
-      const char *state = doc["gameState"] | "";
-      int nowUs = doc[home ? "homeTeam" : "awayTeam"]["score"] | us;
-      int nowThem = doc[home ? "awayTeam" : "homeTeam"]["score"] | them;
-      if (nowUs > us) pushEvent(SHOW_GOAL, nowUs, nowThem, opp.c_str());
-      if (nowThem > them) pushEvent(SHOW_AGAINST, nowUs, nowThem, opp.c_str());
-      us = nowUs;          // a goal overturned on review just lowers the score quietly
-      them = nowThem;
-      liveUs = us;
-      liveThem = them;
-      gameLive = !isOver(state);
-
-      String period = String(doc["periodDescriptor"]["periodType"] | "REG") == "REG"
-                          ? "P" + String(doc["periodDescriptor"]["number"] | 1)
-                          : String(doc["periodDescriptor"]["periodType"] | "");
-      String clock = doc["clock"]["inIntermission"] | false ? "INT" : String(doc["clock"]["timeRemaining"] | "");
-      setStatus("{\"state\":\"" + String(isOver(state) ? "final" : "live") + "\",\"us\":" + us + ",\"them\":" + them +
-                ",\"opp\":\"" + opp + "\",\"home\":" + (home ? "true" : "false") +
-                ",\"period\":\"" + period + "\",\"clock\":\"" + clock + "\"}");
-
-      if (isOver(state)) {
-        // Remember the game so a reboot doesn't replay the result.
-        p.begin("sharks", false);
-        if (p.getUInt("done", 0) != id) {
-          p.putUInt("done", id);
-          pushEvent(us > them ? SHOW_WIN : SHOW_LOSS, us, them, opp.c_str());
-        }
-        p.end();
-        return;
-      }
-    }
-    vTaskDelay(pdMS_TO_TICKS(10000));
-  }
-  gameLive = false;
-}
-
-static void sharksTask(void *) {
-  JsonDocument filter;
-  JsonObject g = filter["games"].add<JsonObject>();
-  g["id"] = true;
-  g["gameState"] = true;
-  g["startTimeUTC"] = true;
-  g["awayTeam"]["abbrev"] = true;
-  g["awayTeam"]["score"] = true;
-  g["homeTeam"]["abbrev"] = true;
-  g["homeTeam"]["score"] = true;
-  const String url = "https://api-web.nhle.com/v1/club-schedule/" + String(TEAM) + "/week/now";
-  uint32_t seenBeforeStart = 0;   // a game we saw before puck drop: count goals from 0-0
-
-  for (;;) {
-    if (!S.sharks || WiFi.status() != WL_CONNECTED) {
-      setStatus(S.sharks ? "{\"state\":\"offline\"}" : "{\"state\":\"off\"}");
-      vTaskDelay(pdMS_TO_TICKS(5000));
-      continue;
-    }
-    JsonDocument doc;
-    if (!fetchJson(url, doc, filter)) { vTaskDelay(pdMS_TO_TICKS(30000)); continue; }
-
-    bool followed = false, foundNext = false;
-    for (JsonObject game : doc["games"].as<JsonArray>()) {
-      const char *state = game["gameState"] | "";
-      uint32_t id = game["id"] | 0;
-      bool home = !strcmp(game["homeTeam"]["abbrev"] | "", TEAM);
-      String opp = game[home ? "awayTeam" : "homeTeam"]["abbrev"] | "???";
-      if (isLive(state)) {
-        int us = 0, them = 0;
-        if (seenBeforeStart != id) {       // joined mid-game: don't replay old goals
-          us = game[home ? "homeTeam" : "awayTeam"]["score"] | 0;
-          them = game[home ? "awayTeam" : "homeTeam"]["score"] | 0;
-        }
-        Serial.printf("Sharks game %u live vs %s (%d-%d)\n", id, opp.c_str(), us, them);
-        followGame(id, us, them, home, opp);
-        followed = true;
-        break;
-      }
-      if (!isOver(state) && !foundNext) {
-        foundNext = true;
-        seenBeforeStart = id;
-        setStatus("{\"state\":\"next\",\"opp\":\"" + opp + "\",\"home\":" + (home ? "true" : "false") +
-                  ",\"start\":\"" + String(game["startTimeUTC"] | "") + "\"}");
-      }
-    }
-    if (!followed && !foundNext) setStatus("{\"state\":\"none\"}");
-    if (!followed) vTaskDelay(pdMS_TO_TICKS(120000));
-  }
-}
-
-static void setupSharks() {
-  gameEvents = xQueueCreate(6, sizeof(GameEvent));
-  gameLock = xSemaphoreCreateMutex();
-  // Priority 0, the same as the idle task: Stream::timedRead busy-waits while a
-  // response stalls, and above idle that starves IDLE0 into a task-watchdog reset.
-  xTaskCreatePinnedToCore(sharksTask, "sharks", 12288, nullptr, 0, nullptr, 0);
-}
-
-// ---- Shark pong (core 1) ----------------------------------------------------
-// Teal Sharks paddle on the left, the other team on the right, a white puck.
-// During a live game the digits are the real score; otherwise the rally score.
+// ---- Pong: the hockey game screen (core 1) ----------------------------------
+// Our paddle on the left in the team colour, the other team on the right, a
+// white puck. During a live game the digits are the real score; otherwise the
+// rally score.
 static const char *DIGITS3x5[10] = {
   "111101101101111", "010110010010111", "111001111100111", "111001111001111", "101101111001001",
   "111100111001111", "111100111101111", "111001001001001", "111101111101111", "111101111001111",
@@ -200,7 +40,7 @@ static void drawDigit(CRGB *buf, uint8_t d, int x0, int y0, CRGB c) {
 }
 
 static void fxPong() {
-  static float bx = 7.5f, by = 7.5f, vx = 0.22f, vy = 0.13f, left = 7.5f, right = 7.5f;
+  static float bx = CX, by = CY, vx = 0.22f * PANELS, vy = 0.13f, left = CY, right = CY;
   static float aimL = 0, aimR = 0;          // each paddle's miss-prone offset, rerolled per rally
   static uint8_t ptsL = 0, ptsR = 0;
   static uint32_t pauseUntil = 0, chompUntil = 0;
@@ -208,8 +48,8 @@ static void fxPong() {
   float k = S.speed / 50.0f;
 
   auto serve = [&](float dir) {
-    bx = 7.5f; by = 4 + random8(8);
-    vx = dir * 0.22f; vy = (random8(2) ? 1 : -1) * (0.06f + random8(10) / 100.0f);
+    bx = CX; by = 4 + random8(8);
+    vx = dir * 0.22f * PANELS;           // the same crossing time on a wider screen vy = (random8(2) ? 1 : -1) * (0.06f + random8(10) / 100.0f);
     aimL = (random8(100) - 50) / 30.0f;     // up to ~1.7 px off: Sharks usually reach it
     aimR = (random8(100) - 50) / 22.0f;     // up to ~2.3 px off: they miss more
     pauseUntil = now + 400;
@@ -220,7 +60,7 @@ static void fxPong() {
     if (by < 0) { by = -by; vy = -vy; }
     if (by > H - 1) { by = 2 * (H - 1) - by; vy = -vy; }
     // Paddles chase the puck when it's coming their way, a little imperfectly.
-    float tl = vx < 0 ? by + aimL : 7.5f, tr = vx > 0 ? by + aimR : 7.5f;
+    float tl = vx < 0 ? by + aimL : CY, tr = vx > 0 ? by + aimR : CY;
     left += constrain(tl - left, -0.20f * k, 0.20f * k);
     right += constrain(tr - right, -0.17f * k, 0.17f * k);
     left = constrain(left, 1.5f, H - 2.5f);
@@ -230,21 +70,28 @@ static void fxPong() {
     } else if (bx >= W - 2 && vx > 0 && fabsf(by - right - 0.5f) <= 2.5f) {
       vx = -vx * 1.04f; vy += (by - right - 0.5f) * 0.04f; bx = W - 2;
     }
-    vx = constrain(vx, -0.45f, 0.45f);
+    vx = constrain(vx, -0.45f * PANELS, 0.45f * PANELS);
     vy = constrain(vy, -0.3f, 0.3f);
     if (bx < -1) { ptsR++; serve(1); }
     if (bx > W) { ptsL++; serve(-1); }
   }
 
   fill_solid(frame, NUM_LEDS, CRGB(0, 0, 4));
-  for (int y = 0; y < H; y += 2) { px(7, y) = CRGB(0, 25, 30); px(8, y) = CRGB(0, 25, 30); }
-  bool live = gameLive;
+  for (int y = 0; y < H; y += 2) { px(W / 2 - 1, y) = CRGB(0, 25, 30); px(W / 2, y) = CRGB(0, 25, 30); }
+  int slot = liveSlot();
+  bool live = slot >= 0;
+  if (live) useTeam(teamAt(slot));
   CRGB dim(40, 40, 50);
-  drawDigit(frame, live ? liveUs : ptsL, 3, 1, TEAL.scale8(110));
-  drawDigit(frame, live ? liveThem : ptsR, 10, 1, dim);
+  // A score that hasn't refreshed in a minute (Wi-Fi lost, API down) blinks
+  // rather than passing as live.
+  bool stale = live && now - games[slot].scoreAt > 60000;
+  if (!stale || (now / 500) % 2) {
+    drawDigit(frame, live ? games[slot].us : ptsL, W / 2 - 5, 1, CRGB(TC1).scale8(110));
+    drawDigit(frame, live ? games[slot].them : ptsR, W / 2 + 2, 1, dim);
+  }
   for (int i = -2; i <= 1; i++) {
     int yl = (int)lroundf(left) + i, yr = (int)lroundf(right) + i;
-    if (yl >= 0 && yl < H) px(0, yl) = now < chompUntil ? CRGB::White : TEAL;
+    if (yl >= 0 && yl < H) px(0, yl) = now < chompUntil ? CRGB::White : TC1;
     if (yr >= 0 && yr < H) px(W - 1, yr) = CRGB(150, 150, 160);
   }
   int x = lroundf(bx), y = lroundf(by);
@@ -252,11 +99,20 @@ static void fxPong() {
 }
 
 // ---- Shows (core 1) ---------------------------------------------------------
-static GameEvent show{SHOW_NONE, 0, 0, {0}, 0};
+static GameEvent show{SHOW_NONE, 0, 0, 0, {0}, 0};
 static uint32_t showStart = 0;
 
 static String scoreLine(const GameEvent &e) {
-  return String(TEAM) + " " + e.us + "  " + e.opp + " " + e.them;
+  return String(showTeam.abbr) + " " + e.us + "  " + e.opp + " " + e.them;
+}
+
+// What a score is called, by sport and points.
+static String scoreWords(const GameEvent &e) {
+  switch (showTeam.league) {
+    case L_NFL: return e.extra >= 6 ? "TOUCHDOWN!" : e.extra == 3 ? "FIELD GOAL!" : e.extra == 2 ? "+2" : "+1";
+    case L_MLB: return e.extra == 1 ? "RUN!" : String(e.extra) + " RUNS!";
+    default:    return "GOAL!";
+  }
 }
 
 // Scrolls `s` once starting at `t0`; returns false when it has gone by.
@@ -273,7 +129,7 @@ static void teamWaves(CRGB *buf, uint32_t t, uint8_t level) {
   for (int y = 0; y < H; y++)
     for (int x = 0; x < W; x++) {
       uint8_t v = sin8(x * 20 + y * 12 + t / 4);
-      buf[y * W + x] = TEAL;
+      buf[y * W + x] = TC1;
       buf[y * W + x].nscale8(scale8(scale8(v, v), level));
     }
 }
@@ -282,15 +138,15 @@ static void teamWaves(CRGB *buf, uint32_t t, uint8_t level) {
 static bool goalShow(CRGB *buf, uint32_t t, const String &words) {
   fill_solid(buf, NUM_LEDS, CRGB::Black);
   if (t < 1500) {                                     // strobe: teal, white, black
-    static const CRGB flash[] = {TEAL, CRGB::White, CRGB::Black, ORANGE};
+    const CRGB flash[] = {TC1, CRGB::White, CRGB::Black, TC2};
     fill_solid(buf, NUM_LEDS, flash[(t / 90) % 4]);
     return true;
   }
   if (t < 3500) {                                     // rings bursting from the centre
-    float r = ((t - 1500) % 1000) / 1000.0f * 12;
+    float r = ((t - 1500) % 1000) / 1000.0f * (CX + 4.5f);
     for (int i = 0; i < NUM_LEDS; i++) {
       float d = fabsf(DIST[i] / 16.0f - r);
-      if (d < 1.2f) buf[i] = ((t - 1500) / 1000) % 2 ? ORANGE : TEAL;
+      if (d < 1.2f) buf[i] = ((t - 1500) / 1000) % 2 ? TC2 : TC1;
       else if (random8() < 6) buf[i] = CRGB::White;
     }
     return true;
@@ -299,7 +155,7 @@ static bool goalShow(CRGB *buf, uint32_t t, const String &words) {
     for (int y = 12; y < H; y++)
       for (int x = 0; x < W; x++) {
         uint8_t v = sin8(x * 32 + y * 40 + t / 2);
-        if (y > 12 || v > 150) buf[y * W + x] = TEAL;
+        if (y > 12 || v > 150) buf[y * W + x] = TC1;
       }
     int fx = -2 + (int)(t - 3500) * (W + 8) / 2000;   // nose of the fin
     for (int k = 0; k < 6; k++)
@@ -367,7 +223,7 @@ static void drawBones(CRGB *buf, int x0, int y0, uint8_t level, uint8_t eye) {
 static void water(CRGB *buf, uint32_t t, uint8_t level) {
   for (int y = 0; y < H; y++)
     for (int x = 0; x < W; x++) buf[y * W + x] = CRGB(0, 14 + y * 2, 40 + y * 4).nscale8(level);
-  for (int i = 0; i < 4; i++) {                       // bubbles drifting up
+  for (int i = 0; i < 4 * PANELS; i++) {              // bubbles drifting up
     int bx = (i * 5 + 3) % W, by = H - 1 - (int)((t / 90 + i * 11) % H);
     if (by >= 0 && by < H) buf[by * W + bx] = CRGB(50, 100, 150).nscale8(level);
   }
@@ -376,7 +232,7 @@ static void water(CRGB *buf, uint32_t t, uint8_t level) {
 // Goal against: the shark swims in, an X-ray flicker, and it's just bones,
 // sinking with a glowing red eye.
 static bool skeletonShow(CRGB *buf, uint32_t t, const String &words) {
-  const int restX = 1, restY = 4;
+  const int restX = (W - SHARK_W) / 2, restY = 4;
   if (t < 400) {                                      // a red warning flash
     fill_solid(buf, NUM_LEDS, CRGB(150, 0, 0));
     nscale8(buf, NUM_LEDS, 255 - t * 255 / 400);
@@ -422,17 +278,19 @@ static const char *RIP3x5[3] = {"110101110101101", "111010010010111", "110101110
 static void tombstone(CRGB *buf, int rise, uint8_t level) {
   static const uint8_t STARS[][2] = {{3, 1}, {13, 0}, {0, 9}, {15, 6}, {1, 0}};
   fill_solid(buf, NUM_LEDS, CRGB(4, 4, 18));
-  for (auto &st : STARS) buf[st[1] * W + st[0]] = CRGB(90, 90, 110);
+  for (int p = 0; p < PANELS; p++)
+    for (auto &st : STARS) buf[st[1] * W + (st[0] + p * 7) % W] = CRGB(90, 90, 110);
   int dy = 14 - rise;                                 // rise 0..14 lifts it out of the ground
   for (int y = 0; y < 14; y++)
     for (int x = 0; x < W; x++) {
       int sy = y - dy;                                // row within the stone
-      bool stone = (sy == 1 && x >= 4 && x <= 11) || (sy == 2 && x >= 2 && x <= 13) || (sy >= 3 && x >= 1 && x <= 14);
+      int sx = x - OX;                                // column within the stone's 16
+      bool stone = (sy == 1 && sx >= 4 && sx <= 11) || (sy == 2 && sx >= 2 && sx <= 13) || (sy >= 3 && sx >= 1 && sx <= 14);
       if (stone) buf[y * W + x] = CRGB(115, 115, 125);
     }
   for (int n = 0; n < 3; n++)
     for (int i = 0; i < 15; i++) {
-      int y = 4 + i / 3 + dy, x = 3 + n * 4 + i % 3;
+      int y = 4 + i / 3 + dy, x = OX + 3 + n * 4 + i % 3;
       if (RIP3x5[n][i] == '1' && y >= 0 && y < 14) buf[y * W + x] = CRGB(25, 25, 35);
     }
   for (int y = 14; y < H; y++)
@@ -442,7 +300,7 @@ static void tombstone(CRGB *buf, int rise, uint8_t level) {
 
 static bool lossShow(CRGB *buf, uint32_t t, const String &words) {
   const CRGB SEA(0, 15, 45);
-  const int restX = 1, restY = 4;
+  const int restX = (W - SHARK_W) / 2, restY = 4;
   if (t < 4000) {
     fill_solid(buf, NUM_LEDS, SEA);
     if (t < 1500) {                                   // swims in
@@ -495,13 +353,13 @@ static void drawJaws(CRGB *buf, int gap, int shake) {
 
 // Fireworks: a new burst every 300 ms, twelve sparks each, drooping as they fade.
 static void fireworks(CRGB *buf, uint32_t t, uint8_t level, const CRGB *colors = nullptr) {
-  static const CRGB SHARKS_COLORS[] = {TEAL, ORANGE, CRGB::White, CRGB(0, 220, 200)};
-  const CRGB *COLORS = colors ? colors : SHARKS_COLORS;
+  const CRGB TEAM_COLORS[] = {TC1, TC2, CRGB::White, blend(TC1, CRGB::White, 100)};
+  const CRGB *COLORS = colors ? colors : TEAM_COLORS;
   for (int b = max(0, (int)(t / 300) - 3); b <= (int)(t / 300); b++) {
     uint32_t age = t - b * 300;
     if (age > 1000) continue;
     uint32_t h = b * 2654435761u;
-    float cx = 3 + h % 10, cy = 2 + (h >> 8) % 8;
+    float cx = 3 + h % (W - 6), cy = 2 + (h >> 8) % 8;
     float r = age / 110.0f, droop = (age / 400.0f) * (age / 400.0f);
     uint8_t fade = 255 - age * 255 / 1000;
     CRGB c = COLORS[b % 4];
@@ -566,7 +424,7 @@ static bool winShow(CRGB *buf, uint32_t t) {
   uint32_t s = t - 6000;
   if (s < 3000) { fireworks(buf, s, 255); return true; }
   uint32_t textT0 = 3000;
-  const String words = "SHARKS WIN!";
+  const String words = isSharks(showTeam) ? String("SHARKS WIN!") : String(showTeam.abbr) + " WIN!";
   uint32_t scoreT0 = textT0 + (textWidth(words, 2) + W) * 35;
   teamWaves(buf, t, s < scoreT0 ? 140 : 60);
   fireworks(buf, s, 90);
@@ -577,6 +435,8 @@ static bool winShow(CRGB *buf, uint32_t t) {
 static bool knicksShow(CRGB *buf, uint32_t t, const GameEvent &e);   // knicks.h
 
 // Draws the current show into buf. Returns false when nothing is playing.
+// Other teams run the same timelines with the shark-only stretches skipped:
+// the fin, the X-ray skeleton, the belly-up float and JAWS.
 static bool renderShow(CRGB *buf, uint32_t now) {
   if (show.kind == SHOW_NONE) {
     GameEvent next;
@@ -584,6 +444,7 @@ static bool renderShow(CRGB *buf, uint32_t now) {
     show = next;
     showStart = now;
   }
+  useTeam(teamAt(show.slot));
   uint32_t t = now - showStart;
   bool playing;
   if (show.kind >= K_SWISH) {
@@ -591,11 +452,18 @@ static bool renderShow(CRGB *buf, uint32_t now) {
     if (!playing) show.kind = SHOW_NONE;
     return playing;
   }
+  bool sharks = isSharks(showTeam);
   switch (show.kind) {
-    case SHOW_GOAL:    playing = goalShow(buf, t, "GOAL!"); break;
-    case SHOW_WIN:     playing = winShow(buf, t); break;
-    case SHOW_AGAINST: playing = skeletonShow(buf, t, "UGH."); break;
-    default:           playing = lossShow(buf, t, "FINAL"); break;
+    case SHOW_GOAL: {
+      // A football extra point or two-pointer gets a quick flash, not the works.
+      bool small = showTeam.league == L_NFL && show.extra <= 2;
+      uint32_t tt = small ? (t < 600 ? t : t + 4900) : sharks || t < 3500 ? t : t + 2000;
+      playing = goalShow(buf, tt, scoreWords(show));
+      break;
+    }
+    case SHOW_WIN:     playing = winShow(buf, sharks ? t : t + 6000); break;
+    case SHOW_AGAINST: playing = skeletonShow(buf, sharks || t < 400 ? t : t + 6600, "UGH."); break;
+    default:           playing = lossShow(buf, sharks ? t : t + 4000, "FINAL"); break;
   }
   if (!playing) show.kind = SHOW_NONE;
   return playing;

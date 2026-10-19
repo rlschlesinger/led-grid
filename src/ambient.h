@@ -5,21 +5,22 @@
 //   2. the time, a weather icon and the temperature
 //   3. by day, the sun on today's path across the sky; by night, the moon in
 //      its current phase among twinkling stars
-// Skipped while a Sharks or Knicks game is live (their game screens own it).
+// Skipped while a followed team's game is live (its game screen owns it).
 //
 // Data, fetched on core 0 every 15 minutes from Open-Meteo (no key): the
 // temperature, conditions, sunrise, sunset and the UTC offset (so DST just
-// follows). Home is fixed below, to the ZIP centroid, rounded.
+// follows). Home is set on the web page (a city or ZIP the page looks up),
+// stored rounded to ~1 km.
 // The sun's height and the moon phase are worked out here.
 #pragma once
 #include <time.h>
 
-static const float HOME_LAT = 39.63f, HOME_LON = -119.71f;   // Sparks, NV 89436
-static const char *HOME_NAME = "Sparks";
+static String jsonEscape(const String &s);   // main.cpp
 
 struct Ambient {
   bool weather = false;
-  float lat = HOME_LAT, lon = HOME_LON;
+  float lat = 0, lon = 0;
+  char city[41] = "";
   int tempF = 0;
   int code = 0;              // WMO weather code
   time_t sunrise = 0, sunset = 0;
@@ -27,6 +28,7 @@ struct Ambient {
 };
 static Ambient amb;          // written on core 0 under ambLock, copied out to read
 static SemaphoreHandle_t ambLock;
+static volatile bool ambRefresh = false;   // home moved: fetch the weather now
 
 static Ambient ambient() {
   xSemaphoreTake(ambLock, portMAX_DELAY);
@@ -41,12 +43,13 @@ static void ambientTask(void *) {
     if (WiFi.status() != WL_CONNECTED) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
     if (!timeStarted) { configTime(0, 0, "pool.ntp.org", "time.google.com"); timeStarted = true; }
 
+    Ambient where = ambient();
     char url[300];
     snprintf(url, sizeof(url),
              "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
              "&current=temperature_2m,weather_code&daily=sunrise,sunset&timezone=auto"
              "&temperature_unit=fahrenheit&forecast_days=1&timeformat=unixtime",
-             amb.lat, amb.lon);
+             where.lat, where.lon);
     JsonDocument filter;
     filter["utc_offset_seconds"] = true;
     filter["current"]["temperature_2m"] = true;
@@ -63,21 +66,32 @@ static void ambientTask(void *) {
       amb.sunset = doc["daily"]["sunset"][0] | 0;
       amb.weather = true;
       xSemaphoreGive(ambLock);
-      vTaskDelay(pdMS_TO_TICKS(15 * 60 * 1000));
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(60000));
     }
+    // Every 15 minutes (a minute after a failure), or straight away if home moves.
+    for (int s = 0; s < (amb.weather ? 900 : 60) && !ambRefresh; s++) vTaskDelay(pdMS_TO_TICKS(1000));
+    ambRefresh = false;
   }
 }
 
-static void setupAmbient() {
+static void setHome(float lat, float lon, const String &city = "") {
+  xSemaphoreTake(ambLock, portMAX_DELAY);
+  amb.lat = lat;
+  amb.lon = lon;
+  if (city.length()) strlcpy(amb.city, city.c_str(), sizeof(amb.city));
+  amb.weather = false;       // until the new place's weather arrives
+  xSemaphoreGive(ambLock);
+  ambRefresh = true;
+}
+
+static void setupAmbient(float lat, float lon, const String &city) {
   ambLock = xSemaphoreCreateMutex();
+  setHome(lat, lon, city);
   xTaskCreatePinnedToCore(ambientTask, "ambient", 12288, nullptr, 0, nullptr, 0);   // idle priority: see setupSharks()
 }
 
 static String ambientJson() {
   Ambient a = ambient();
-  String j = "{\"city\":\"" + String(HOME_NAME) + "\"";
+  String j = "{\"city\":\"" + jsonEscape(a.city) + "\",\"lat\":" + String(a.lat, 2) + ",\"lon\":" + String(a.lon, 2);
   if (a.weather) j += ",\"temp\":" + String(a.tempF) + ",\"code\":" + String(a.code);
   return j + "}";
 }
@@ -192,7 +206,7 @@ static void sunScene(CRGB *buf, time_t now, const Ambient &a, int yday, uint32_t
 
 static void moonScene(CRGB *buf, time_t now, uint32_t t) {
   fill_solid(buf, NUM_LEDS, CRGB(2, 2, 10));
-  for (int i = 0; i < 14; i++) {                    // stars, each twinkling at its own pace
+  for (int i = 0; i < 14 * PANELS; i++) {           // stars, each twinkling at its own pace
     uint32_t h = (i + 1) * 2654435761u;
     int x = h % W, y = (h >> 8) % H;
     uint8_t b = 40 + scale8(sin8(t / (4 + i % 5) + h), 140);
@@ -202,7 +216,7 @@ static void moonScene(CRGB *buf, time_t now, uint32_t t) {
   if (shoot < 450) {
     int k = shoot / 30;
     for (int j = 0; j < 4; j++) {
-      int x = 15 - k + j, y = k / 2 + j / 2 - 1;
+      int x = W - 1 - k + j, y = k / 2 + j / 2 - 1;
       if (x >= 0 && x < W && y >= 0 && y < H) buf[y * W + x] = CRGB(200, 200, 255).nscale8(255 - j * 60);
     }
   }
@@ -211,7 +225,7 @@ static void moonScene(CRGB *buf, time_t now, uint32_t t) {
   uint8_t glow = 200 + scale8(sin8(t / 8), 55);
   for (int y = 0; y < H; y++)
     for (int x = 0; x < W; x++) {
-      float dx = x - 7.5f, dy = y - 7.5f, r2 = dx * dx + dy * dy;
+      float dx = x - CX, dy = y - CY, r2 = dx * dx + dy * dy;
       if (r2 > 6.6f * 6.6f) continue;
       float w = sqrtf(max(0.0f, 6.6f * 6.6f - dy * dy));
       bool lit = p <= 0.5f ? dx >= w * c : dx <= -w * c;   // waxing lights the right side
@@ -244,7 +258,7 @@ static bool renderCard(CRGB *buf, uint32_t nowMs) {
   gmtime_r(&realLocal, &rt);
   int quarter = rt.tm_hour * 4 + rt.tm_min / 15;
   bool onQuarter = rt.tm_min % 15 == 0;
-  if (!cardOn && S.clockCard && onQuarter && quarter != lastQuarter && !(S.sharks && gameLive) && !(S.knicks && knicksLive)) {
+  if (!cardOn && S.clockCard && onQuarter && quarter != lastQuarter && liveSlot() < 0) {
     triggerCard();
     utc = time(nullptr);
     local = utc + a.utcOffset;
@@ -273,8 +287,8 @@ static bool renderCard(CRGB *buf, uint32_t nowMs) {
       bool day = utc >= a.sunrise && utc < a.sunset;
       String temp = String(a.tempF);
       bool icon = temp.length() <= 2;
-      int tw = digitsWidth(temp) + 3, x = icon ? 6 : (W - tw) / 2;
-      if (icon) drawIcon(buf, iconFor(a.code, day), 0, 10);
+      int tw = digitsWidth(temp) + 3, x = icon ? OX + 6 : (W - tw) / 2;
+      if (icon) drawIcon(buf, iconFor(a.code, day), OX, 10);
       drawDigits(buf, temp, x, 10, tempColor(a.tempF));
       x += digitsWidth(temp) + 1;
       buf[10 * W + x] = buf[10 * W + x + 1] = buf[11 * W + x] = buf[11 * W + x + 1] = tempColor(a.tempF);   // degree

@@ -21,9 +21,9 @@ except ImportError:
     sys.exit("pyserial missing: pip3 install pyserial")
 
 ssid = sys.argv[1] if len(sys.argv) > 1 else input("Network name: ")
-ports = glob.glob("/dev/cu.usbserial-*")
+ports = glob.glob("/dev/cu.usbserial-*") + glob.glob("/dev/cu.wchusbserial*")   # CP2102 or CH340
 if not ports:
-    sys.exit("No ESP32 found on USB (looked for /dev/cu.usbserial-*).")
+    sys.exit("No ESP32 found on USB (looked for /dev/cu.usbserial-* and /dev/cu.wchusbserial*).")
 password = getpass.getpass(f'Password for "{ssid}" (hidden): ')
 if "\t" in ssid + password or "\n" in ssid + password:
     sys.exit("Tabs and newlines aren't supported.")
@@ -32,6 +32,11 @@ s = serial.Serial()
 s.port, s.baudrate, s.timeout = ports[0], 115200, 0.2
 s.dtr = s.rts = False          # don't reset the board on open
 s.open()
+# Some boards reset when the port opens anyway; let it boot before sending,
+# or the line arrives before the firmware is listening.
+boot, end = "", time.time() + 3
+while time.time() < end and "Access point" not in boot:
+    boot += s.read(512).decode(errors="replace")
 s.write(f"WIFI\t{ssid}\t{password}\n".encode())
 del password
 
