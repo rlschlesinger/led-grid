@@ -195,6 +195,76 @@ static void liveStatus(int slot, const Follow &f, bool over) {
                   ",\"opp\":\"" + f.opp + "\",\"home\":" + (f.home ? "true" : "false") + ",\"detail\":\"" + f.detail + "\"}");
 }
 
+static void goLive(int slot, Follow &f, const String &eid, const String &usId, const String &themId,
+                   const String &opp, bool home) {
+  Serial.printf("%s game %s live vs %s\n", f.team.abbr, eid.c_str(), opp.c_str());
+  // Seen before the start: count every score from 0-0. Joined mid-game:
+  // take the first scores as they are, so old goals don't replay.
+  bool fromStart = f.preEid == eid;
+  f.eid = eid; f.usId = usId; f.themId = themId; f.opp = opp; f.home = home;
+  f.us = fromStart ? 0 : -1; f.them = fromStart ? 0 : -1;
+  f.lead = 0; f.usRun = f.themRun = 0; f.usRunShown = f.themRunShown = false;
+  f.detail = ""; f.lastStatus = 0; f.nextPoll = 0;
+  f.live = true;
+  strlcpy(games[slot].opp, opp.c_str(), sizeof(games[slot].opp));
+}
+
+static bool clockSet() { return time(nullptr) > 1700000000; }
+
+// The team's games from yesterday to tomorrow (UTC) on ESPN's core API, a few
+// hundred bytes. Any other than the team page's nextEvent that is in progress
+// is followed. Needs the clock, which the quarter-hour card sets over NTP.
+static bool findLiveToday(int slot, Follow &f, const String &nextEid) {
+  time_t now = time(nullptr);
+  if (!clockSet()) return false;
+  char from[9], to[9];
+  time_t a = now - 86400, b = now + 86400;
+  struct tm tm;
+  strftime(from, sizeof(from), "%Y%m%d", gmtime_r(&a, &tm));
+  strftime(to, sizeof(to), "%Y%m%d", gmtime_r(&b, &tm));
+  const Team &t = f.team;
+  String lg = String("https://sports.core.api.espn.com/v2/sports/") + LEAGUE_SPORTS[t.league] + "/leagues/" +
+              LEAGUE_KEYS[t.league];
+  static JsonDocument listFilter, statusFilter, compFilter, teamFilter;
+  if (listFilter.isNull()) {
+    listFilter["items"][0]["$ref"] = true;
+    statusFilter["type"]["state"] = true;
+    JsonObject who = compFilter["competitors"].add<JsonObject>();
+    who["id"] = true;
+    who["homeAway"] = true;
+    teamFilter["abbreviation"] = true;
+  }
+  JsonDocument list;
+  if (!fetchCore(lg + "/teams/" + t.id + "/events?dates=" + from + "-" + to, list, &listFilter)) return false;
+  for (JsonObject it : list["items"].as<JsonArray>()) {
+    String ref = it["$ref"] | "";         // .../events/401892554?lang=en&region=us
+    int at = ref.indexOf("/events/");
+    if (at < 0) continue;
+    String eid = ref.substring(at + 8);
+    int q = eid.indexOf('?');
+    if (q >= 0) eid = eid.substring(0, q);
+    if (eid == nextEid) continue;
+    String comp = lg + "/events/" + eid + "/competitions/" + eid;
+    JsonDocument st;
+    if (!fetchCore(comp + "/status", st, &statusFilter) || strcmp(st["type"]["state"] | "", "in")) continue;
+    JsonDocument c;
+    if (!fetchCore(comp, c, &compFilter)) continue;
+    String usId, themId;
+    bool home = false;
+    for (JsonObject who : c["competitors"].as<JsonArray>()) {
+      String cid = who["id"] | "";
+      if (cid.toInt() == t.id) { usId = cid; home = !strcmp(who["homeAway"] | "", "home"); }
+      else themId = cid;
+    }
+    if (!usId.length() || !themId.length()) continue;
+    JsonDocument them;
+    String opp = fetchCore(lg + "/teams/" + themId, them, &teamFilter) ? String(them["abbreviation"] | "???") : "???";
+    goLive(slot, f, eid, usId, themId, opp, home);
+    return true;
+  }
+  return false;
+}
+
 // The team's next (or current) game, from its ESPN team page.
 static void checkSchedule(int slot, Follow &f) {
   static JsonDocument filter;
@@ -228,18 +298,12 @@ static void checkSchedule(int slot, Follow &f) {
     else { themId = cid; opp = c["team"]["abbreviation"] | "???"; themScore = c["score"]["displayValue"] | ""; }
   }
   if (!strcmp(state, "in") && usId.length() && themId.length()) {
-    Serial.printf("%s game %s live vs %s\n", t.abbr, eid.c_str(), opp.c_str());
-    // Seen before the start: count every score from 0-0. Joined mid-game:
-    // take the first scores as they are, so old goals don't replay.
-    bool fromStart = f.preEid == eid;
-    f.eid = eid; f.usId = usId; f.themId = themId; f.opp = opp; f.home = home;
-    f.us = fromStart ? 0 : -1; f.them = fromStart ? 0 : -1;
-    f.lead = 0; f.usRun = f.themRun = 0; f.usRunShown = f.themRunShown = false;
-    f.detail = ""; f.lastStatus = 0; f.nextPoll = 0;
-    f.live = true;
-    strlcpy(games[slot].opp, opp.c_str(), sizeof(games[slot].opp));
+    goLive(slot, f, eid, usId, themId, opp, home);
     return;
   }
+  // ESPN moves nextEvent on to the following game once one starts, so a game
+  // in progress can be missing from the team page. Look at today's games too.
+  if (strcmp(state, "post") && findLiveToday(slot, f, eid)) return;
   if (!strcmp(state, "post")) {
     setStatus(slot, "{\"state\":\"final\",\"us\":" + String(usScore.length() ? usScore : "0") + ",\"them\":" +
                     String(themScore.length() ? themScore : "0") + ",\"opp\":\"" + opp + "\",\"home\":" +
@@ -249,7 +313,7 @@ static void checkSchedule(int slot, Follow &f) {
     setStatus(slot, "{\"state\":\"next\",\"opp\":\"" + opp + "\",\"home\":" + (home ? "true" : "false") +
                     ",\"start\":\"" + String(e["date"] | "") + "\"}");
   }
-  f.nextCheck = millis() + 120000;
+  f.nextCheck = millis() + (clockSet() ? 120000 : 15000);   // soon again if today's games went unchecked
 }
 
 // Basketball scores ~45 times a game per side, so its shows are tiered.
