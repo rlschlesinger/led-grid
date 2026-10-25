@@ -83,6 +83,9 @@ to be reflashed over USB once.
 - `src/games.h`: follows up to two teams (NHL/NBA/NFL/MLB, ESPN's public API, no key) and
   queues score events. `src/sharks.h` holds the shows for every league, plus Sharks extras and
   hockey pong. `src/knicks.h` holds the tiered basketball shows and the scoreboard game screen.
+- `src/schedule.h`: the on/off schedule (weekday/weekend, clock or sun times), acted on in `loop()`.
+- `src/mqtt.h`: Home Assistant over MQTT discovery (PubSubClient). Its task only starts once a
+  broker is set on the page.
 - `src/flights.h`: Flights mode, the nearest plane overhead (adsb.fi / adsb.lol, adsbdb).
 - `web/index.html`: the control page. `tools/gzip_webpage.py` gzips it into `src/webpage.h` on
   every build, so edit the HTML, not the header.
@@ -98,4 +101,12 @@ to be reflashed over USB once.
 - The web server and OTA run in their own core-0 task so a slow client can't freeze animations.
   Keep it that way.
 - adsb.lol rejects the default ESP32 user agent. `fetchJson` sets its own.
+- Heap is tight: every HTTPS handshake needs ~40 KB, and the games task keeps one ESPN connection
+  open. About 10 KB less free heap made fetches fail and the board reset on the watchdog every few
+  minutes. Before adding a task or buffer, check `/api/state`: `heap`, `minHeap`, and `stacks`
+  (least free stack per task, in bytes: web, games, ambient, flights, mqtt). Size new stacks from
+  those numbers, and leave about 3 KB of headroom.
+- The games watchdog (`gamesStuck()` in `src/games.h`, checked from the web task) restarts the
+  board after 15 min with no good ESPN answer. Any new path that waits longer than that between
+  checks has to stamp `gamesOkAt`, or the board will restart for nothing.
 - Avoid mDNS. It crashed busy boards on LANs full of Apple devices, so use the IP.

@@ -347,6 +347,7 @@ static bool fetchAircraft(float lat, float lon, JsonDocument &doc, JsonArray &li
 static void flightsTask(void *) {
   static RouteInfo route;
   for (;;) {
+    NOTE_STACK(3);
     // Only while the mode is on screen: no point using the APIs otherwise.
     if (millis() - flightsSeenAt > 3000 || WiFi.status() != WL_CONNECTED) {
       xSemaphoreTake(skyLock, portMAX_DELAY);
@@ -414,7 +415,7 @@ static void flightsTask(void *) {
 
 static void setupFlights() {
   skyLock = xSemaphoreCreateMutex();
-  xTaskCreatePinnedToCore(flightsTask, "flights", 12288, nullptr, 0, nullptr, 0);   // idle priority: see setupGames()
+  xTaskCreatePinnedToCore(flightsTask, "flights", 10240, nullptr, 0, nullptr, 0);   // idle priority: see setupGames()
 }
 
 // ---- Drawing --------------------------------------------------------------------

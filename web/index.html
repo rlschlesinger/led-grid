@@ -38,6 +38,13 @@ details summary{cursor:pointer;font-weight:600}
 .swatch{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:2px;vertical-align:-1px}
 .slot .tools button{padding:7px 9px;font-size:14px}
 #wifiSec{border-color:var(--accent)}
+.powerRow{display:flex;align-items:center;gap:12px}
+.powerRow .hint{margin:0;flex:1}
+#power{min-width:76px;font-weight:600}
+.day{color:var(--dim);font-size:13px;margin:12px 0 0}
+.ev{display:flex;align-items:center;gap:8px;margin:6px 0}
+.ev span{width:30px;flex:none;color:var(--dim)}
+.ev select,.ev input{flex:1;min-width:0;font:inherit;color:var(--text);background:#111214;border:1px solid var(--line);border-radius:8px;padding:8px}
 </style></head><body><main>
 <header>
   <h1>LED Grid</h1>
@@ -54,6 +61,15 @@ details summary{cursor:pointer;font-weight:600}
     <label class="row"><span>Password</span><input type="password" id="pass" autocomplete="current-password"></label>
     <div class="tools"><button type="submit" class="on">Save &amp; connect</button><button type="button" id="rescan">Scan again</button><button type="button" id="forget">Forget</button></div>
   </form>
+</section>
+
+<section>
+  <div class="powerRow"><button id="power">On</button><p class="hint" id="powerInfo"></p></div>
+  <details id="schedBox" style="margin-top:12px"><summary>Schedule</summary>
+    <div class="checks" style="margin:10px 0 0;grid-template-columns:1fr"><label><input type="checkbox" id="schedOn"> Switch on and off by itself</label></div>
+    <div id="sched"></div>
+    <p class="hint">Switching it on or off by hand holds until the next scheduled change. While it's off, goals and wins still play. Sunrise and sunset are for the weather location below.</p>
+  </details>
 </section>
 
 <section><h2>Effect</h2><div class="modes" id="modes"></div></section>
@@ -125,9 +141,24 @@ details summary{cursor:pointer;font-weight:600}
   <label class="row"><span>Power limit</span><input type="number" id="maxMilliamps" min="200" max="20000" step="100"><span style="width:auto">mA</span></label>
   <p class="hint">Dims everything to stay under this current. Set it to your 5 V supply's rating, minus a little.</p>
 
+  <h2 style="margin-top:18px">Home Assistant</h2>
+  <p class="hint" id="mqttNow"></p>
+  <form id="mqttForm">
+    <label class="row"><span>Broker</span><input type="text" id="mqttHost" placeholder="HA's address, e.g. 192.168.1.20" autocomplete="off" autocapitalize="off"></label>
+    <label class="row"><span>Port</span><input type="number" id="mqttPort" min="1" max="65535" placeholder="1883"></label>
+    <label class="row"><span>User</span><input type="text" id="mqttUser" autocomplete="off" autocapitalize="off"></label>
+    <label class="row"><span>Password</span><input type="password" id="mqttPass" autocomplete="new-password"></label>
+    <div class="tools"><button type="submit" class="on">Save</button><button type="button" id="mqttOff">Disconnect</button></div>
+  </form>
+  <p class="hint">Needs the Mosquitto broker add-on and the MQTT integration in Home Assistant. Log in with a Home Assistant user. The grid then shows up under Settings › Devices, ready for dashboards and automations.</p>
+
   <h2 style="margin-top:18px">Wi-Fi</h2>
   <p class="hint" id="wifiNow"></p>
   <div class="tools"><button type="button" id="wifiChange">Change Wi-Fi…</button></div>
+
+  <h2 style="margin-top:18px">Restart</h2>
+  <p class="hint" id="dogNow"></p>
+  <div class="tools"><button type="button" id="restart">Restart the grid</button></div>
 </details>
 </section>
 </main>
@@ -189,7 +220,9 @@ function apply(s, fromServer) {
   put('cycleMins', s.cycleMins);
   if (s.w && (s.w !== NW || s.h !== NH)) setSize(s.w, s.h);
   $('swapRow').classList.toggle('hidden', NW <= 16);
-  for (const k of ['serpentine', 'columns', 'flipX', 'flipY', 'swapPanels', 'gamePong', 'clockCard', 'autoCycle']) $(k).checked = !!s[k];
+  for (const k of ['serpentine', 'columns', 'flipX', 'flipY', 'swapPanels', 'gamePong', 'clockCard', 'autoCycle', 'schedOn']) $(k).checked = !!s[k];
+  showPower(s);
+  showMqtt(s.mqtt || {});
   if (first) { buildSlots(); buildRotation(s); }
   showTeams(s.teams || []);
   [...$('rotation').querySelectorAll('input')].forEach(c => c.checked = !!(s.cycleMask & (1 << c.dataset.bit)));
@@ -207,8 +240,97 @@ function apply(s, fromServer) {
     ? `Couldn't join “${w.ssid}”. Check the password, or pick another network.`
     : 'Pick your home network. The grid restarts, joins it, and scrolls its new address across the panel. Open that address afterwards.';
   if (first && !w.connected) openWifi();
+  const d = s.dog || {n: 0};
+  $('dogNow').textContent = 'It restarts itself if game updates stop for 15 minutes.' + (d.n
+    ? ` That has happened ${d.n === 1 ? 'once' : d.n + ' times'}; the last time, ${d.why === 1 ? 'the game checker had stopped' : 'ESPN had stopped answering'}.`
+    : '');
   online(true);
 }
+
+// ---- Power and schedule -------------------------------------------------------
+// The board stores each event as t:<minute of day>, sr:<offset> or ss:<offset>.
+const SUN_OFFSETS = [[-60, '1 h before'], [-30, '30 min before'], [-15, '15 min before'], [0, 'right at it'], [15, '15 min after'], [30, '30 min after'], [60, '1 h after']];
+const hhmm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+
+function buildSchedule() {
+  [['Mon–Fri', 0], ['Sat & Sun', 2]].forEach(([day, first]) => {
+    const h = document.createElement('p');
+    h.className = 'day';
+    h.textContent = day;
+    $('sched').appendChild(h);
+    ['On', 'Off'].forEach((label, k) => {
+      const row = document.createElement('div');
+      row.className = 'ev';
+      row.dataset.i = first + k;
+      row.innerHTML = `<span>${label}</span><select class="k"><option value="t">At</option><option value="sr">Sunrise</option><option value="ss">Sunset</option></select>` +
+        `<input type="time" class="t" step="300"><select class="o hidden"></select>`;
+      SUN_OFFSETS.forEach(([v, name]) => row.querySelector('.o').add(new Option(name, v)));
+      row.querySelector('.k').onchange = () => { showEvent(row); sendSchedule(); };
+      row.querySelector('.t').onchange = sendSchedule;
+      row.querySelector('.o').onchange = sendSchedule;
+      $('sched').appendChild(row);
+    });
+  });
+}
+function showEvent(row) {
+  const sun = row.querySelector('.k').value !== 't';
+  row.querySelector('.t').classList.toggle('hidden', sun);
+  row.querySelector('.o').classList.toggle('hidden', !sun);
+}
+function sendSchedule() {
+  const parts = [...$('sched').querySelectorAll('.ev')].map(row => {
+    const k = row.querySelector('.k').value;
+    if (k !== 't') return k + ':' + row.querySelector('.o').value;
+    const [h, m] = (row.querySelector('.t').value || '00:00').split(':').map(Number);
+    return 't:' + (h * 60 + m);
+  });
+  set({sched: parts.join(',')});
+}
+function showPower(s) {
+  if (!$('sched').children.length) buildSchedule();
+  $('power').textContent = s.power ? 'On' : 'Off';
+  $('power').classList.toggle('on', s.power);
+  const next = s.next ? s.next[0].toLowerCase() + s.next.slice(1) : '';
+  $('powerInfo').textContent = !s.schedOn ? (s.power ? 'On until you switch it off.' : 'Off. Game shows still play.')
+    : next ? `Schedule: ${next}.` : 'Schedule on. Waiting for the time and sunset from the internet.';
+  if ($('sched').contains(document.activeElement)) return;   // mid-edit
+  (s.sched || '').split(',').forEach((ev, i) => {
+    const row = $('sched').querySelector(`[data-i="${i}"]`);
+    if (!row) return;
+    const [k, v] = ev.split(':');
+    row.querySelector('.k').value = k;
+    if (k === 't') row.querySelector('.t').value = hhmm(+v);
+    else row.querySelector('.o').value = v;
+    showEvent(row);
+  });
+}
+$('power').onclick = () => set({power: state.power ? 0 : 1});
+$('schedOn').onchange = e => set({schedOn: e.target.checked ? 1 : 0});
+
+// ---- Home Assistant -------------------------------------------------------------
+const MQTT_ERRORS = {'-4': 'the broker stopped answering', '-2': 'can’t reach the broker', 4: 'the broker turned down the user name or password', 5: 'the broker turned down this login'};
+function showMqtt(m) {
+  const put = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
+  put('mqttHost', m.host || '');
+  put('mqttPort', m.port || 1883);
+  put('mqttUser', m.user || '');
+  $('mqttPass').placeholder = m.hasPass ? 'saved (leave blank to keep)' : '';
+  $('mqttNow').textContent = !m.host ? 'Not connected to Home Assistant.'
+    : m.status === 3 ? `Connected to ${m.host} as ${m.id}.`
+    : m.status === 2 ? `Connecting to ${m.host}…`
+    : m.status === 1 ? 'Waiting for home Wi-Fi.'
+    : `Not connected: ${MQTT_ERRORS[m.status] || 'error ' + m.status}. It retries every 15 s.`;
+}
+async function saveMqtt(body) {
+  const r = await fetch('/api/mqtt', {method: 'POST', body: new URLSearchParams(body)});
+  apply(await r.json(), true);
+  $('mqttPass').value = '';
+}
+$('mqttForm').addEventListener('submit', e => {
+  e.preventDefault();
+  saveMqtt({host: $('mqttHost').value.trim(), port: $('mqttPort').value || 1883, user: $('mqttUser').value.trim(), pass: $('mqttPass').value});
+});
+$('mqttOff').onclick = () => saveMqtt({host: ''});
 
 // ---- Teams --------------------------------------------------------------------
 const LEAGUES = [['', 'None'], ['nhl', 'NHL'], ['nba', 'NBA'], ['nfl', 'NFL'], ['mlb', 'MLB']];
@@ -368,6 +490,21 @@ $('ssidPick').addEventListener('change', e => {
 });
 $('rescan').onclick = scan;
 $('wifiChange').onclick = () => { openWifi(); $('wifiSec').scrollIntoView({behavior: 'smooth'}); };
+$('restart').onclick = async () => {
+  const b = $('restart'), label = b.textContent, wait = ms => new Promise(r => setTimeout(r, ms));
+  b.disabled = true;
+  b.textContent = 'Restarting…';
+  try { await fetch('/api/restart', {method: 'POST'}); } catch (e) {}
+  await wait(4000);
+  for (const until = Date.now() + 60000; Date.now() < until; await wait(2000)) {
+    try {
+      const s = await (await fetch('/api/state')).json();
+      if (s.uptime < 90) { apply(s, true); b.textContent = 'Back up'; await wait(3000); b.textContent = label; b.disabled = false; return; }
+    } catch (e) {}
+  }
+  b.textContent = "Didn't come back. Unplug it and plug it back in.";
+  b.disabled = false;
+};
 
 $('gamePong').addEventListener('change', e => set({gamePong: e.target.checked ? 1 : 0}));
 $('clockCard').addEventListener('change', e => set({clockCard: e.target.checked ? 1 : 0}));
@@ -376,7 +513,7 @@ $('cycleMins').addEventListener('change', e => set({cycleMins: e.target.value}))
 $('cardTest').onclick = () => fetch('/api/card/test', {method: 'POST'});
 setInterval(async () => {
   if (document.visibilityState !== 'visible') return;
-  try { showTeams((await (await fetch('/api/state')).json()).teams || []); } catch (e) {}
+  try { apply(await (await fetch('/api/state')).json(), true); } catch (e) {}   // picks up changes made from Home Assistant
 }, 10000);
 
 // Sliders: send while dragging, throttled.

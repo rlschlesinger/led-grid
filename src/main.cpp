@@ -119,6 +119,14 @@ struct Settings {
   float lat = 39.63f, lon = -119.66f;   // weather and flights: Sparks, NV by default, rounded
   String city = "Sparks";
   uint16_t maxMilliamps = 500;     // safe on USB power; raise in Setup with a real supply
+  bool power = true;              // off = dark, apart from game shows
+  bool schedOn = false;           // follow the on/off schedule (schedule.h)
+  // weekday on, weekday off, weekend on, weekend off: t:<minute> | sr:<offset> | ss:<offset>
+  String sched = "t:420,t:1380,t:480,t:0";
+  String mqttHost;                // Home Assistant's MQTT broker ("" = not used)
+  uint16_t mqttPort = 1883;
+  String mqttUser;
+  String mqttPass;
   String staSsid;
   String staPass;
 } S;
@@ -132,6 +140,10 @@ WebServer server(80);
 
 uint32_t vt = 0;               // "virtual" time in ms, scaled by the speed slider
 uint32_t saveAt = 0;           // when to write settings to flash (0 = nothing pending)
+volatile uint32_t stateVersion = 1;
+// Least free stack each task has had, in bytes: web, games, ambient, flights, mqtt.
+volatile uint32_t stackLow[5];
+#define NOTE_STACK(i) (stackLow[i] = uxTaskGetStackHighWaterMark(nullptr))   // bumped on every change, so Home Assistant hears about it
 bool canvasDirty = false;
 
 String noticeText;             // a one-off message scrolled over the effect (the IP)
@@ -168,7 +180,7 @@ static bool every(uint32_t &last, uint32_t interval) {
   return true;
 }
 
-static void markDirty() { saveAt = millis() + 2000; }
+static void markDirty() { saveAt = millis() + 2000; stateVersion++; }
 
 // ---- Text -------------------------------------------------------------------
 static int textWidth(const String &s, uint8_t scale) { return s.length() * 6 * scale; }
@@ -526,6 +538,8 @@ static void fxLayout() {
 #include "ambient.h"
 #include "knicks.h"
 #include "flights.h"
+#include "schedule.h"
+#include "mqtt.h"
 
 typedef void (*Effect)();
 static const Effect EFFECTS[M_COUNT] = {
@@ -563,6 +577,15 @@ static void loadSettings() {
   S.autoCycle = prefs.getBool("auto", S.autoCycle);
   S.cycleMins = constrain(prefs.getUChar("cyc", S.cycleMins), 1, 15);
   S.maxMilliamps = constrain(prefs.getUShort("ma", S.maxMilliamps), 200, 20000);
+  S.power = prefs.getBool("pwr", S.power);
+  S.schedOn = prefs.getBool("sch", S.schedOn);
+  String sc = prefs.getString("sched", S.sched);
+  if (parseSched(sc, sched)) S.sched = sc; else parseSched(S.sched, sched);
+  schedPrev = prefs.getChar("spv", -1);
+  S.mqttHost = prefs.getString("mqh", "");
+  S.mqttPort = prefs.getUShort("mqp", S.mqttPort);
+  S.mqttUser = prefs.getString("mqu", "");
+  S.mqttPass = prefs.getString("mqpw", "");
   S.staSsid = prefs.getString("ssid", "");
   S.staPass = prefs.getString("pass", "");
   if (prefs.getBytesLength("canvas") == sizeof(canvas)) prefs.getBytes("canvas", canvas, sizeof(canvas));
@@ -594,6 +617,10 @@ static void saveSettings() {
   prefs.putBool("card", S.clockCard);
   prefs.putBool("auto", S.autoCycle);
   prefs.putUChar("cyc", S.cycleMins);
+  prefs.putBool("pwr", S.power);
+  prefs.putBool("sch", S.schedOn);
+  prefs.putString("sched", S.sched);
+  prefs.putChar("spv", schedPrev);
   if (canvasDirty) { prefs.putBytes("canvas", canvas, sizeof(canvas)); canvasDirty = false; }
   prefs.end();
 }
@@ -606,6 +633,30 @@ static String jsonEscape(const String &s) {
     else if ((uint8_t)c >= 32) out += c;
   }
   return out;
+}
+
+// Restarts by the games watchdog, kept across reboots so a freeze leaves a trace.
+static uint32_t dogCount = 0;
+static uint8_t dogWhy = 0;        // the last one's reason: 1 = games task stopped, 2 = ESPN went quiet
+
+static void loadDog() {
+  Preferences p;
+  p.begin("dog", true);
+  dogCount = p.getUInt("n", 0);
+  dogWhy = p.getUChar("why", 0);
+  p.end();
+}
+
+static void watchdogRestart(int why) {
+  Preferences p;
+  p.begin("dog", false);
+  p.putUInt("n", dogCount + 1);
+  p.putUChar("why", why);
+  p.end();
+  Serial.printf("Watchdog: games stuck (%d). Restarting.\n", why);
+  Serial.flush();
+  delay(200);
+  ESP.restart();
 }
 
 static String stateJson() {
@@ -626,6 +677,10 @@ static String stateJson() {
   j += ",\"flipY\":" + String(S.flipY ? "true" : "false");
   j += ",\"swapPanels\":" + String(S.swapPanels ? "true" : "false");
   j += ",\"maxMilliamps\":" + String(S.maxMilliamps);
+  j += ",\"power\":" + String(S.power ? "true" : "false");
+  j += ",\"schedOn\":" + String(S.schedOn ? "true" : "false");
+  j += ",\"sched\":\"" + S.sched + "\",\"next\":\"" + schedNext() + "\"";
+  j += ",\"mqtt\":" + mqttJson();
   j += ",\"teams\":" + teamsJson();
   j += ",\"gamePong\":" + String(S.gamePong ? "true" : "false");
   j += ",\"clockCard\":" + String(S.clockCard ? "true" : "false");
@@ -641,6 +696,10 @@ static String stateJson() {
   j += ",\"rssi\":" + String(WiFi.RSSI());
   j += ",\"heap\":" + String(ESP.getFreeHeap()) + ",\"minHeap\":" + String(ESP.getMinFreeHeap()) + ",\"maxBlock\":" + String(ESP.getMaxAllocHeap());
   j += ",\"reset\":" + String((int)esp_reset_reason());
+  j += ",\"dog\":{\"n\":" + String(dogCount) + ",\"why\":" + String(dogWhy) + "}";
+  j += ",\"stacks\":[";
+  for (int i = 0; i < 5; i++) j += String(i ? "," : "") + stackLow[i];
+  j += "]";
   j += ",\"modes\":[";
   for (int i = 0; i < M_COUNT; i++) j += String(i ? "," : "") + "\"" + MODE_NAMES[i] + "\"";
   j += "],\"palettes\":[";
@@ -704,6 +763,12 @@ static void handleSet() {
     setHome(S.lat, S.lon, S.city);
   }
   if (server.hasArg("gamePong")) S.gamePong = argBool("gamePong");
+  if (server.hasArg("power")) setPower(argBool("power"));
+  if (server.hasArg("sched")) {
+    SchedEv ev[4];
+    if (parseSched(server.arg("sched"), ev)) { memcpy(sched, ev, sizeof(sched)); S.sched = server.arg("sched"); schedPrev = -1; }
+  }
+  if (server.hasArg("schedOn")) setSchedule(argBool("schedOn"));
   if (server.hasArg("clockCard")) S.clockCard = argBool("clockCard");
   if (server.hasArg("maxMilliamps")) {
     S.maxMilliamps = constrain(server.arg("maxMilliamps").toInt(), 200, 20000);
@@ -752,6 +817,25 @@ static void handleWifi() {
   ESP.restart();
 }
 
+// Home Assistant's broker. An empty host stops MQTT; an empty password keeps the saved one.
+static void handleMqtt() {
+  S.mqttHost = server.arg("host").substring(0, 64);
+  S.mqttHost.trim();
+  S.mqttPort = server.hasArg("port") ? constrain(server.arg("port").toInt(), 1, 65535) : 1883;
+  S.mqttUser = server.arg("user").substring(0, 64);
+  if (server.arg("pass").length()) S.mqttPass = server.arg("pass").substring(0, 64);
+  if (!S.mqttHost.length()) { S.mqttUser = ""; S.mqttPass = ""; }
+  prefs.begin("grid", false);
+  prefs.putString("mqh", S.mqttHost);
+  prefs.putUShort("mqp", S.mqttPort);
+  prefs.putString("mqu", S.mqttUser);
+  prefs.putString("mqpw", S.mqttPass);
+  prefs.end();
+  mqttReconfig = true;
+  startMqtt();
+  server.send(200, "application/json", stateJson());
+}
+
 // Nearby networks for the Wi-Fi picker: strongest first, each name once.
 // Scanning takes 2-3 s; it runs on the web task, so the animation carries on.
 static void handleScan() {
@@ -784,6 +868,12 @@ static void setupWeb() {
   server.on("/api/canvas", HTTP_GET, [] { server.send(200, "text/plain", toHex(canvas)); });
   server.on("/api/canvas", HTTP_POST, handleCanvasPost);
   server.on("/api/wifi", HTTP_POST, handleWifi);
+  server.on("/api/restart", HTTP_POST, [] {
+    server.send(200, "text/plain", "Restarting.");
+    delay(500);
+    ESP.restart();
+  });
+  server.on("/api/mqtt", HTTP_POST, handleMqtt);
   // Preview a team's shows: /api/test?slot=0&kind=goal|against|win|loss
   // (basketball also: swish|three|opp|run|lead|brick).
   server.on("/api/test", HTTP_POST, [] {
@@ -881,6 +971,7 @@ static volatile bool apOn = true;   // the setup network (LED-Grid) is up
 static void webTask(void *) {
   bool dnsUp = false;
   for (;;) {
+    NOTE_STACK(0);
     if (apOn != dnsUp) {
       if (apOn) dns.start(53, "*", WiFi.softAPIP());
       else dns.stop();
@@ -889,6 +980,11 @@ static void webTask(void *) {
     if (dnsUp) dns.processNextRequest();
     server.handleClient();
     ArduinoOTA.handle();
+    static uint32_t dogAt = 0;
+    if (millis() - dogAt > 10000 && !otaActive) {
+      dogAt = millis();
+      if (int why = gamesStuck()) watchdogRestart(why);
+    }
     vTaskDelay(pdMS_TO_TICKS(2));
   }
 }
@@ -1018,6 +1114,7 @@ void setup() {
   delay(200);
   Serial.println("\nLED Grid");
   loadSettings();
+  loadDog();
 
   FastLED.addLeds<WS2812B, DATA_PIN, GRB>(leds, NUM_LEDS);
   FastLED.setMaxPowerInVoltsAndMilliamps(5, S.maxMilliamps);
@@ -1031,13 +1128,15 @@ void setup() {
   setupGames(S.team);
   setupAmbient(S.lat, S.lon, S.city);
   setupFlights();
-  xTaskCreatePinnedToCore(webTask, "web", 8192, nullptr, 1, nullptr, 0);
+  setupMqtt();
+  xTaskCreatePinnedToCore(webTask, "web", 6144, nullptr, 1, nullptr, 0);
 }
 
 void loop() {
   if (otaActive) { delay(5); return; }   // the OTA progress bar owns the LEDs
   pollWifi();
   pollSerial();
+  schedTick();
 
   static uint32_t lastFrame = 0;
   uint32_t now = millis();
@@ -1087,6 +1186,10 @@ void loop() {
     memcpy(faded, frame, sizeof(faded));
     nscale8(faded, NUM_LEDS, cycleLevel);
     out = faded;
+  }
+  if (!S.power && !showing) {               // switched off: dark, but game shows still play
+    static CRGB dark[NUM_LEDS];
+    out = dark;
   }
   memcpy(shown, out, sizeof(shown));
   for (uint8_t y = 0; y < H; y++)

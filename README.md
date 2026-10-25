@@ -33,9 +33,31 @@ Effects: Solid, Rainbow, Plasma, Fire, Matrix, Twinkle, Life, Ripple, Lava lamp,
 
 Change the data pin, AP name and AP password at the top of `src/main.cpp`.
 
+## On/off schedule
+
+The On/Off button at the top of the page switches the panel dark or back on. Under **Schedule**, weekdays and weekends each get an on time and an off time. Each one is a clock time, or sunrise or sunset up to an hour either side. An off time earlier than the on time carries past midnight. The schedule only acts when it's due to change, so switching the grid by hand holds until the next scheduled change. While it's off, a followed team's goals and wins still play their shows.
+
+It needs the time and the sun times from the weather fetch. The last ones it got are kept in flash, so it carries on through a weather outage after a restart.
+
+## Home Assistant
+
+The grid talks MQTT and announces itself to Home Assistant through MQTT discovery, so no YAML is needed.
+
+1. In Home Assistant, install the **Mosquitto broker** add-on, start it, and add the **MQTT** integration it offers.
+2. Make a Home Assistant user for the grid (Settings → People → Users). The broker accepts Home Assistant logins.
+3. On the grid's page, open **Setup → Home Assistant** and enter Home Assistant's address, port 1883, and that user's name and password.
+
+The grid then appears under Settings → Devices as **LED Grid xxxx** (the last four of its MAC). It has a light with on/off, brightness, colour and every effect plus "Auto-cycle", a palette picker, and switches for the schedule, auto-cycle, the game screen and the quarter-hour card. There's also a speed slider, a message box that scrolls whatever you type, a button that shows the clock card, and sensors for the next scheduled change, Wi-Fi signal and IP address. The device page's "Visit" link opens the grid's own page at its current IP.
+
+Picking a colour on its own switches to Solid, unless the effect already uses the colour (Text, Radar, Matrix). Clearing the message goes back to auto-cycle.
+
+## Restarts
+
+**Setup → Restart** restarts the grid from the page (`POST /api/restart`). The grid also restarts itself if it's following a team and its game checks stop: no good answer from ESPN for 15 minutes, or the checker not running for 2. It counts these restarts and keeps the count, with the last reason, through power cycles. The page shows them under Restart, and `/api/state` has them as `dog`.
+
 ## Wireless updates
 
-Once the board is on your Wi-Fi: `pio run -e ota -t upload` (address set in `platformio.ini`).
+Once the board is on your Wi-Fi: `pio run -e ota -t upload` (address set in `platformio.ini`). For another board, add `--upload-port <its IP>`.
 The password lives in `ota.ini`, which is gitignored. To set it up on a fresh checkout, write a new random one there and flash once over USB.
 
 ## Sharks goal alerts

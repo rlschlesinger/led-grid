@@ -184,6 +184,8 @@ struct Follow {                   // the task's private state per slot
   uint32_t nextCheck = 0, nextPoll = 0, lastStatus = 0, lastBig = 0;
 };
 static Follow follows[SLOTS];
+// For the watchdog (millis): the task's last pass, and its last good answer from ESPN.
+static volatile uint32_t gamesLoopAt = 0, gamesOkAt = 0;
 
 static String coreBase(const Follow &f) {
   return String("https://sports.core.api.espn.com/v2/sports/") + LEAGUE_SPORTS[f.team.league] + "/leagues/" +
@@ -285,6 +287,7 @@ static void checkSchedule(int slot, Follow &f) {
                LEAGUE_KEYS[t.league] + "/teams/" + t.id;
   JsonDocument doc;
   if (!fetchJson(url, doc, filter)) { f.nextCheck = millis() + 30000; return; }
+  gamesOkAt = millis();
   JsonObject e = doc["team"]["nextEvent"][0];
   if (e.isNull()) { setStatus(slot, "{\"state\":\"none\"}"); f.nextCheck = millis() + 600000; return; }
 
@@ -342,6 +345,7 @@ static void pollLive(int slot, Follow &f) {
   JsonDocument a, b;
   if (!fetchCore(base + "/competitors/" + f.usId + "/score", a) ||
       !fetchCore(base + "/competitors/" + f.themId + "/score", b)) return;   // a blip: try again next poll
+  gamesOkAt = millis();
   int nowUs = scoreOf(a), nowThem = scoreOf(b);
   if (f.us < 0) { f.us = nowUs; f.them = nowThem; f.lead = nowUs - nowThem; }   // joined mid-game: no replays
 
@@ -390,8 +394,11 @@ static void pollLive(int slot, Follow &f) {
 
 static void gamesTask(void *) {
   for (;;) {
+    NOTE_STACK(1);
+    gamesLoopAt = millis();
     if (teamsChanged) {
       teamsChanged = false;
+      gamesOkAt = millis();
       for (int i = 0; i < SLOTS; i++) {
         Team t = teamAt(i);
         Follow &f = follows[i];
@@ -404,6 +411,7 @@ static void gamesTask(void *) {
     }
     if (WiFi.status() != WL_CONNECTED) {
       for (int i = 0; i < SLOTS; i++) if (follows[i].team.league) setStatus(i, "{\"state\":\"offline\"}");
+      gamesOkAt = millis();         // no Wi-Fi isn't ESPN's silence; give it a fresh 15 min once back
       vTaskDelay(pdMS_TO_TICKS(5000));
       continue;
     }
@@ -419,6 +427,19 @@ static void gamesTask(void *) {
     }
     vTaskDelay(pdMS_TO_TICKS(500));
   }
+}
+
+// Why the games side looks stuck, or 0: 1 = the task stopped running, 2 = no good
+// answer from ESPN in 15 min. On 2026-10-24 a board sat on "next" through a whole
+// period like this (cause unknown); a restart fixed it. Checks run every 2-10 min.
+static int gamesStuck() {
+  bool any = false;
+  for (int i = 0; i < SLOTS; i++) if (follows[i].team.league) any = true;
+  if (!any || WiFi.status() != WL_CONNECTED) return 0;
+  uint32_t now = millis();
+  if (now - gamesLoopAt > 120000) return 1;
+  if (now - gamesOkAt > 900000) return 2;
+  return 0;
 }
 
 static void setupGames(const String specs[SLOTS]) {

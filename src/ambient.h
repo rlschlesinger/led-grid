@@ -40,6 +40,7 @@ static Ambient ambient() {
 static void ambientTask(void *) {
   bool timeStarted = false;
   for (;;) {
+    NOTE_STACK(2);
     if (WiFi.status() != WL_CONNECTED) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
     if (!timeStarted) { configTime(0, 0, "pool.ntp.org", "time.google.com"); timeStarted = true; }
 
@@ -86,7 +87,7 @@ static void setHome(float lat, float lon, const String &city = "") {
 static void setupAmbient(float lat, float lon, const String &city) {
   ambLock = xSemaphoreCreateMutex();
   setHome(lat, lon, city);
-  xTaskCreatePinnedToCore(ambientTask, "ambient", 12288, nullptr, 0, nullptr, 0);   // idle priority: see setupSharks()
+  xTaskCreatePinnedToCore(ambientTask, "ambient", 8192,  nullptr, 0, nullptr, 0);   // idle priority: see setupSharks()
 }
 
 static String ambientJson() {
